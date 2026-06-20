@@ -1,0 +1,7 @@
+{
+    "KPlugin": {
+        "Name": "ki3 tiling",
+        "Description": "i3/sway-style manual tiling for KWin",
+        "EnabledByDefault": true
+    }
+}
