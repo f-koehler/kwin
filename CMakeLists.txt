@@ -6,6 +6,7 @@ project(KWin VERSION ${PROJECT_VERSION})
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(PROJECT_DEP_VERSION "6.7.0")
 set(QT_MIN_VERSION "6.10.0")
@@ -67,7 +68,7 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
 )
 
 if (Qt6Gui_VERSION VERSION_GREATER_EQUAL "6.10.0")
-    find_package(Qt6GuiPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
+  find_package(Qt6GuiPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
 endif()
 
 find_package(Qt6Test ${QT_MIN_VERSION} CONFIG QUIET)
@@ -77,15 +78,15 @@ set_package_properties(Qt6Test PROPERTIES
 )
 add_feature_info("Qt6Test" Qt6Test_FOUND "Required for building tests")
 if (NOT Qt6Test_FOUND)
-    set(BUILD_TESTING OFF CACHE BOOL "Build the testing tree.")
+  set(BUILD_TESTING OFF CACHE BOOL "Build the testing tree.")
 endif()
 
 if (BUILD_TESTING)
-    find_package(KPipeWire)
+  find_package(KPipeWire)
 
-    if (Qt6WaylandClient_VERSION VERSION_GREATER_EQUAL "6.10.0")
-        find_package(Qt6WaylandClientPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
-    endif()
+  if (Qt6WaylandClient_VERSION VERSION_GREATER_EQUAL "6.10.0")
+    find_package(Qt6WaylandClientPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
+  endif()
 endif()
 
 # required frameworks by Core
@@ -108,7 +109,7 @@ find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS
 )
 # required frameworks by config modules
 if(KWIN_BUILD_KCMS)
-    find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS
+  find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS
         Declarative
         KCMUtils
         NewStuff
@@ -118,7 +119,7 @@ if(KWIN_BUILD_KCMS)
 endif()
 
 if(KWIN_BUILD_TABBOX AND KWIN_BUILD_KCMS)
-    find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS
+  find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS
         WidgetsAddons
     )
 endif()
@@ -172,14 +173,14 @@ set_package_properties(Plasma PROPERTIES
 find_package(KDecoration3 ${PROJECT_DEP_VERSION} CONFIG REQUIRED)
 
 if (KWIN_BUILD_DECORATIONS)
-    find_package(Breeze ${PROJECT_DEP_VERSION} CONFIG)
-    set_package_properties(Breeze PROPERTIES
+  find_package(Breeze ${PROJECT_DEP_VERSION} CONFIG)
+  set_package_properties(Breeze PROPERTIES
         TYPE RUNTIME
         PURPOSE "For setting the default window decoration plugin"
     )
 
-    find_package(Aurorae ${PROJECT_DEP_VERSION} CONFIG)
-    set_package_properties(Aurorae PROPERTIES
+  find_package(Aurorae ${PROJECT_DEP_VERSION} CONFIG)
+  set_package_properties(Aurorae PROPERTIES
         TYPE RUNTIME
         PURPOSE "Provides support for decorations downloaded from the internet"
     )
@@ -230,19 +231,19 @@ set_package_properties(XKB PROPERTIES
     PURPOSE "Required for building KWin with Wayland support"
 )
 if (XKB_VERSION VERSION_GREATER_EQUAL 1.5.0)
-    set(HAVE_XKBCOMMON_NO_SECURE_GETENV 1)
+  set(HAVE_XKBCOMMON_NO_SECURE_GETENV 1)
 else()
-    set(HAVE_XKBCOMMON_NO_SECURE_GETENV 0)
+  set(HAVE_XKBCOMMON_NO_SECURE_GETENV 0)
 endif()
 
 find_package(Canberra REQUIRED)
 
 if (KWIN_BUILD_X11)
-    pkg_check_modules(XKBX11 IMPORTED_TARGET xkbcommon-x11 REQUIRED)
-    add_feature_info(XKBX11 XKBX11_FOUND "Required for handling keyboard events in X11 backend")
+  pkg_check_modules(XKBX11 IMPORTED_TARGET xkbcommon-x11 REQUIRED)
+  add_feature_info(XKBX11 XKBX11_FOUND "Required for handling keyboard events in X11 backend")
 
-    # All the required XCB components
-    find_package(XCB 1.10 REQUIRED COMPONENTS
+  # All the required XCB components
+  find_package(XCB 1.10 REQUIRED COMPONENTS
         COMPOSITE
         CURSOR
         DRI3
@@ -260,42 +261,42 @@ if (KWIN_BUILD_X11)
         XINERAMA
         XINPUT
     )
-    set_package_properties(XCB PROPERTIES TYPE REQUIRED)
+  set_package_properties(XCB PROPERTIES TYPE REQUIRED)
 
-    find_package(X11_XCB)
-    set_package_properties(X11_XCB PROPERTIES
+  find_package(X11_XCB)
+  set_package_properties(X11_XCB PROPERTIES
         PURPOSE "Required for building X11 windowed backend of kwin_wayland"
         TYPE OPTIONAL
     )
 
-    find_package(Xwayland 23.1.0)
-    set_package_properties(Xwayland PROPERTIES
+  find_package(Xwayland 23.1.0)
+  set_package_properties(Xwayland PROPERTIES
         URL "https://x.org"
         DESCRIPTION "Xwayland X server"
         TYPE RUNTIME
         PURPOSE "Needed for running kwin_wayland"
     )
 
-    # for kwin internal things
-    set(HAVE_X11_XCB ${X11_XCB_FOUND})
+  # for kwin internal things
+  set(HAVE_X11_XCB ${X11_XCB_FOUND})
 
-    find_package(X11)
-    set_package_properties(X11 PROPERTIES
+  find_package(X11)
+  set_package_properties(X11 PROPERTIES
         DESCRIPTION "X11 libraries"
         URL "https://www.x.org"
         TYPE REQUIRED
     )
 
-    # Scripts to run on XWayland startup
-    set(XWAYLAND_SESSION_SCRIPTS "/etc/xdg/Xwayland-session.d")
+  # Scripts to run on XWayland startup
+  set(XWAYLAND_SESSION_SCRIPTS "/etc/xdg/Xwayland-session.d")
 endif()
 
 find_package(Libinput 1.28)
 set_package_properties(Libinput PROPERTIES TYPE REQUIRED PURPOSE "Required for input handling on Wayland.")
 if (Libinput_VERSION VERSION_GREATER_EQUAL 1.30)
-    set(HAVE_LIBINPUT_PLUGINS 1)
+  set(HAVE_LIBINPUT_PLUGINS 1)
 else()
-    set(HAVE_LIBINPUT_PLUGINS 0)
+  set(HAVE_LIBINPUT_PLUGINS 0)
 endif()
 
 find_package(Libeis-1.0 1.4)
@@ -312,23 +313,23 @@ set_package_properties(UDev PROPERTIES
 find_package(Libdrm 2.4.118)
 set_package_properties(Libdrm PROPERTIES TYPE REQUIRED PURPOSE "Required for drm output on Wayland.")
 if (Libdrm_VERSION VERSION_GREATER_EQUAL 2.4.127)
-    set(HAVE_LIBDRM_FAUX 1)
+  set(HAVE_LIBDRM_FAUX 1)
 else()
-    set(HAVE_LIBDRM_FAUX 0)
+  set(HAVE_LIBDRM_FAUX 0)
 endif()
 
 
 find_package(gbm)
 set_package_properties(gbm PROPERTIES TYPE REQUIRED PURPOSE "Required for egl output of drm backend.")
 if (gbm_VERSION VERSION_GREATER_EQUAL 21.1)
-    set(HAVE_GBM_BO_GET_FD_FOR_PLANE 1)
+  set(HAVE_GBM_BO_GET_FD_FOR_PLANE 1)
 else()
-    set(HAVE_GBM_BO_GET_FD_FOR_PLANE 0)
+  set(HAVE_GBM_BO_GET_FD_FOR_PLANE 0)
 endif()
 if (gbm_VERSION VERSION_GREATER_EQUAL 21.3)
-    set(HAVE_GBM_BO_CREATE_WITH_MODIFIERS2 1)
+  set(HAVE_GBM_BO_CREATE_WITH_MODIFIERS2 1)
 else()
-    set(HAVE_GBM_BO_CREATE_WITH_MODIFIERS2 0)
+  set(HAVE_GBM_BO_CREATE_WITH_MODIFIERS2 0)
 endif()
 
 pkg_check_modules(Libxcvt IMPORTED_TARGET libxcvt>=0.1.1 REQUIRED)
@@ -364,7 +365,7 @@ pkg_check_modules(libsystemd IMPORTED_TARGET libsystemd)
 add_feature_info(libsystemd libsystemd_FOUND "Required for setting up the service watchdog")
 
 if(KWIN_BUILD_GLOBALSHORTCUTS)
-    find_package(KGlobalAccelD REQUIRED)
+  find_package(KGlobalAccelD REQUIRED)
 endif()
 
 pkg_check_modules(libdisplayinfo REQUIRED IMPORTED_TARGET libdisplay-info>=0.2.0)
@@ -374,12 +375,12 @@ pkg_check_modules(PipeWire IMPORTED_TARGET libpipewire-0.3>=1.0.9)
 add_feature_info(PipeWire PipeWire_FOUND "Required for Wayland screencasting")
 
 if (KWIN_BUILD_NOTIFICATIONS)
-    find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS Notifications)
+  find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS Notifications)
 endif()
 
 if (KWIN_BUILD_SCREENLOCKER)
-    find_package(KScreenLocker CONFIG)
-    set_package_properties(KScreenLocker PROPERTIES
+  find_package(KScreenLocker CONFIG)
+  set_package_properties(KScreenLocker PROPERTIES
         TYPE REQUIRED
         PURPOSE "For screenlocker integration in kwin_wayland"
     )
@@ -427,7 +428,7 @@ int main() {
 }
 " HAS_RANGES_SUPPORT)
 if(NOT HAS_RANGES_SUPPORT)
-    message(FATAL_ERROR "Compiler does not support C++20 ranges")
+  message(FATAL_ERROR "Compiler does not support C++20 ranges")
 endif()
 
 check_cxx_source_compiles("
@@ -446,7 +447,7 @@ int main() {
 
 check_cxx_compiler_flag(-Wno-unused-parameter COMPILER_UNUSED_PARAMETER_SUPPORTED)
 if (COMPILER_UNUSED_PARAMETER_SUPPORTED)
-    add_compile_options(-Wno-unused-parameter)
+  add_compile_options(-Wno-unused-parameter)
 endif()
 
 add_definitions(
@@ -487,8 +488,8 @@ ecm_setup_qtplugin_macro_names(
 )
 
 if (KF6DocTools_FOUND)
-    add_subdirectory(doc)
-    kdoctools_install(po)
+  add_subdirectory(doc)
+  kdoctools_install(po)
 endif()
 
 add_subdirectory(data)
@@ -496,12 +497,12 @@ add_subdirectory(kconf_update)
 add_subdirectory(src)
 
 if (BUILD_TESTING)
-    if (Qt6WaylandClient_VERSION VERSION_GREATER_EQUAL "6.10.0")
-        find_package(Qt6WaylandClientPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
-    endif()
+  if (Qt6WaylandClient_VERSION VERSION_GREATER_EQUAL "6.10.0")
+    find_package(Qt6WaylandClientPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
+  endif()
 
-    add_subdirectory(autotests)
-    add_subdirectory(tests)
+  add_subdirectory(autotests)
+  add_subdirectory(tests)
 endif()
 
 # add clang-format target for all our real source files
