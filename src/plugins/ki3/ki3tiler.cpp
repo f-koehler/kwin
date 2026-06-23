@@ -9,6 +9,7 @@
 
 #include "ki3tiler.h"
 #include "ki3_logging.h"
+#include "ki3rules.h"
 
 #include "core/output.h"
 #include "main.h"
@@ -32,6 +33,8 @@ namespace KWin
 Ki3Tiler::Ki3Tiler()
 {
     qCInfo(KWIN_KI3) << "ki3 tiling plugin loaded";
+
+    m_nonTileableRules = loadNonTileableRules();
 
     Workspace *ws = Workspace::self();
     connect(ws, &Workspace::windowAdded, this, &Ki3Tiler::handleWindowAdded);
@@ -173,6 +176,16 @@ void Ki3Tiler::registerShortcuts()
 
 Ki3Tiler::~Ki3Tiler() = default;
 
+bool Ki3Tiler::isNonTileable(const Window *window) const
+{
+    for (const WindowRule &rule : m_nonTileableRules) {
+        if (rule.matches(window)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Ki3Tiler::shouldManage(Window *window) const
 {
     return window
@@ -182,6 +195,7 @@ bool Ki3Tiler::shouldManage(Window *window) const
         && window->isResizable()
         && window->output()
         && !window->isDeleted()
+        && !isNonTileable(window)
         && !m_floatingWindows.contains(window);
 }
 
@@ -306,7 +320,14 @@ CustomTile *Ki3Tiler::firstLeaf(RootTile *root)
 
 void Ki3Tiler::handleWindowAdded(Window *window)
 {
-    if (!shouldManage(window) || m_leafForWindow.contains(window)) {
+    if (m_leafForWindow.contains(window)) {
+        return;
+    }
+    if (!shouldManage(window)) {
+        if (window && isNonTileable(window)) {
+            qCDebug(KWIN_KI3) << "not tiling" << window->resourceClass()
+                              << "- matched a non-tileable rule";
+        }
         return;
     }
     insertWindow(window);
