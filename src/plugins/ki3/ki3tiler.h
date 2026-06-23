@@ -6,10 +6,12 @@
 
 #pragma once
 
+#include "ki3rules.h"
 #include "plugin.h"
 #include "tiles/tile.h"
 
 #include <QHash>
+#include <QList>
 #include <QPointer>
 #include <QSet>
 
@@ -73,6 +75,9 @@ private:
     /** Whether ki3 should tile this window at all. */
     bool shouldManage(Window *window) const;
 
+    /** Whether a non-tileable rule (built-in or user-configured) matches @p window. */
+    bool isNonTileable(const Window *window) const;
+
     /** Insert a manageable window into its output/desktop tile tree. */
     void insertWindow(Window *window);
 
@@ -123,6 +128,9 @@ private:
 
     // Windows the user has detached from tiling (floating).
     QSet<Window *> m_floatingWindows;
+
+    // Rules (built-in + user config) for windows ki3 must never tile.
+    QList<WindowRule> m_nonTileableRules;
 };
 
 } // namespace KWin
