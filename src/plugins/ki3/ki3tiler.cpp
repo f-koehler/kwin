@@ -23,6 +23,7 @@
 #include <KLocalizedString>
 
 #include <QAction>
+#include <QDBusConnection>
 #include <QProcess>
 
 #include <functional>
@@ -41,8 +42,17 @@ Ki3Tiler::Ki3Tiler()
     connect(ws, &Workspace::windowRemoved, this, &Ki3Tiler::handleWindowRemoved);
     connect(ws, &Workspace::windowActivated, this, &Ki3Tiler::handleWindowActivated);
 
-    // i3/sway model: each output independently shows one workspace.
+    // Adapt to monitors being plugged/unplugged (keep the one-desktop-per-screen
+    // invariant and re-tile windows KWin re-homes across outputs).
+    connect(ws, &Workspace::outputAdded, this, &Ki3Tiler::scheduleReconcile);
+    connect(ws, &Workspace::outputRemoved, this, &Ki3Tiler::scheduleReconcile);
+
+    // i3/sway model: each output independently shows one workspace, and there
+    // are 10 fixed workspaces (Meta+1..0). Unlike Plasma's default (one desktop
+    // spanning all outputs), a desktop number here exists on exactly one screen.
     VirtualDesktopManager::self()->setPerOutputVirtualDesktops(true);
+    VirtualDesktopManager::self()->setCount(10);
+    assignInitialDesktops();
 
     registerShortcuts();
 
@@ -50,6 +60,53 @@ Ki3Tiler::Ki3Tiler()
     for (Window *window : ws->windows()) {
         handleWindowAdded(window);
     }
+
+    // Export /Ki3 on KWin's own "org.kde.KWin" service (already owned by this
+    // process via its DBusInterface, alongside /Effects, /Compositor, ...) so
+    // ki3-pager can show/drive per-output desktops without linking KWin internals.
+    QDBusConnection::sessionBus().registerObject(
+        QStringLiteral("/Ki3"), this,
+        QDBusConnection::ExportScriptableSlots | QDBusConnection::ExportScriptableSignals);
+    connect(VirtualDesktopManager::self(), &VirtualDesktopManager::currentChanged,
+            this, &Ki3Tiler::desktopsChanged);
+}
+
+QStringList Ki3Tiler::outputNames() const
+{
+    QStringList names;
+    const auto outputs = workspace()->outputs();
+    names.reserve(outputs.size());
+    for (LogicalOutput *output : outputs) {
+        names << output->name();
+    }
+    return names;
+}
+
+int Ki3Tiler::currentDesktopNumber(const QString &outputName) const
+{
+    const auto outputs = workspace()->outputs();
+    for (LogicalOutput *output : outputs) {
+        if (output->name() == outputName) {
+            VirtualDesktop *desktop = VirtualDesktopManager::self()->currentDesktop(output);
+            return desktop ? desktop->x11DesktopNumber() : 0;
+        }
+    }
+    return 0;
+}
+
+int Ki3Tiler::desktopCount() const
+{
+    return VirtualDesktopManager::self()->count();
+}
+
+void Ki3Tiler::dbusSwitchToWorkspace(int number)
+{
+    switchToWorkspace(number);
+}
+
+void Ki3Tiler::dbusMoveActiveToWorkspace(int number)
+{
+    moveActiveToWorkspace(number);
 }
 
 void Ki3Tiler::registerShortcuts()
@@ -127,11 +184,12 @@ void Ki3Tiler::registerShortcuts()
     add(QStringLiteral("ki3_toggle_float"), i18n("ki3: Toggle Floating"),
         {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Space)}, [this]() { toggleFloating(); });
 
-    // Workspaces: Meta+1..9 switch (focused output), Meta+Shift+1..9 move window.
-    static constexpr Qt::Key digits[9] = {
+    // Workspaces: Meta+1..9,0 switch, Meta+Shift+1..9,0 move window. As in
+    // i3/sway, Meta+0 is workspace 10.
+    static constexpr Qt::Key digits[10] = {
         Qt::Key_1, Qt::Key_2, Qt::Key_3, Qt::Key_4, Qt::Key_5,
-        Qt::Key_6, Qt::Key_7, Qt::Key_8, Qt::Key_9};
-    for (int i = 0; i < 9; ++i) {
+        Qt::Key_6, Qt::Key_7, Qt::Key_8, Qt::Key_9, Qt::Key_0};
+    for (int i = 0; i < 10; ++i) {
         const int n = i + 1;
         add(QStringLiteral("ki3_workspace_%1").arg(n), i18n("ki3: Switch to Workspace %1", n),
             {QKeySequence(Qt::META | digits[i])}, [this, n]() { switchToWorkspace(n); });
@@ -485,18 +543,236 @@ LogicalOutput *Ki3Tiler::focusedOutput() const
     return workspace()->activeOutput();
 }
 
-void Ki3Tiler::switchToWorkspace(int number)
+VirtualDesktop *Ki3Tiler::ensureDesktop(int number)
 {
+    if (number < 1) {
+        return nullptr;
+    }
     VirtualDesktopManager *vdm = VirtualDesktopManager::self();
     if (vdm->count() < uint(number)) {
         vdm->setCount(number);
     }
-    VirtualDesktop *desktop = vdm->desktops().value(number - 1);
+    return vdm->desktops().value(number - 1);
+}
+
+void Ki3Tiler::assignInitialDesktops()
+{
+    VirtualDesktopManager *vdm = VirtualDesktopManager::self();
+    const auto outputs = workspace()->outputs();
+    const auto desktops = vdm->desktops();
+    // One distinct desktop per screen so no number starts out duplicated:
+    // output 0 -> desktop 1, output 1 -> desktop 2, ...
+    for (int i = 0; i < outputs.size() && i < desktops.size(); ++i) {
+        vdm->setCurrent(desktops[i], outputs[i]);
+        qCDebug(KWIN_KI3) << "initial desktop" << (i + 1) << "-> output" << (void *)outputs[i];
+    }
+}
+
+LogicalOutput *Ki3Tiler::outputShowingDesktop(VirtualDesktop *desktop) const
+{
+    VirtualDesktopManager *vdm = VirtualDesktopManager::self();
+    const auto outputs = workspace()->outputs();
+    for (LogicalOutput *output : outputs) {
+        if (vdm->currentDesktop(output) == desktop) {
+            return output;
+        }
+    }
+    return nullptr;
+}
+
+LogicalOutput *Ki3Tiler::outputForDesktop(VirtualDesktop *desktop, Window *exclude) const
+{
+    const auto windows = workspace()->windows();
+    for (Window *w : windows) {
+        if (w != exclude && w->isClient() && w->isNormalWindow()
+            && w->output() && w->isOnDesktop(desktop)) {
+            return w->output();
+        }
+    }
+    return nullptr;
+}
+
+void Ki3Tiler::focusOutput(LogicalOutput *output)
+{
+    if (!output) {
+        return;
+    }
+    workspace()->setActiveOutput(output);
+    VirtualDesktop *desktop = VirtualDesktopManager::self()->currentDesktop(output);
+    // Activate the topmost client on this output+desktop so keyboard focus
+    // actually follows; if it is empty, the active-output change is enough.
+    const auto &stacking = workspace()->stackingOrder();
+    for (auto it = stacking.crbegin(); it != stacking.crend(); ++it) {
+        Window *w = *it;
+        if (w && w->isClient() && w->isNormalWindow() && w->isShown()
+            && w->isOnOutput(output) && w->isOnDesktop(desktop)) {
+            workspace()->activateWindow(w);
+            return;
+        }
+    }
+    qCDebug(KWIN_KI3) << "focusOutput: no window to activate on" << (void *)output;
+}
+
+VirtualDesktop *Ki3Tiler::firstFreeDesktop() const
+{
+    const auto desktops = VirtualDesktopManager::self()->desktops();
+    // Prefer a desktop that is both free (shown on no output) AND truly empty (no
+    // windows anywhere). "Free" alone isn't enough: a desktop not currently shown
+    // can still hold windows hidden on another output, and assigning it to a fresh
+    // screen would show an empty tree while those windows stay stranded elsewhere
+    // (split-brain). Fall back to any free desktop only if every empty one is shown.
+    VirtualDesktop *freeFallback = nullptr;
+    for (VirtualDesktop *desktop : desktops) {
+        if (outputShowingDesktop(desktop)) {
+            continue; // shown somewhere -> not free
+        }
+        if (!outputForDesktop(desktop)) {
+            return desktop; // free and empty: ideal
+        }
+        if (!freeFallback) {
+            freeFallback = desktop; // free but has hidden windows: last resort
+        }
+    }
+    return freeFallback; // nullptr only if every desktop is shown (won't happen with 10)
+}
+
+void Ki3Tiler::scheduleReconcile()
+{
+    if (m_reconcilePending) {
+        return;
+    }
+    m_reconcilePending = true;
+    // Run after KWin finishes the output reconfiguration (re-homing windows,
+    // destroying defunct TileManagers) so we reconcile against settled state.
+    QMetaObject::invokeMethod(this, &Ki3Tiler::reconcileOutputs, Qt::QueuedConnection);
+}
+
+void Ki3Tiler::reconcileOutputs()
+{
+    m_reconcilePending = false;
+    qCDebug(KWIN_KI3) << "reconcile outputs:" << workspace()->outputs().size() << "output(s)";
+    purgeStaleRoots();
+    enforceUniqueDesktops();
+    retileHomelessWindows();
+    ensureSaneFocus();
+}
+
+void Ki3Tiler::purgeStaleRoots()
+{
+    // A removed output's TileManager (and its RootTiles) are destroyed, leaving
+    // dangling raw pointers in m_managedRoots. Keep only roots that still belong
+    // to a live TileManager. Pointer identity comparison never derefs the dead
+    // ones, so this is safe.
+    QSet<RootTile *> valid;
+    const auto outputs = workspace()->outputs();
+    const auto desktops = VirtualDesktopManager::self()->desktops();
+    for (LogicalOutput *output : outputs) {
+        TileManager *tm = workspace()->tileManager(output);
+        if (!tm) {
+            continue;
+        }
+        for (VirtualDesktop *desktop : desktops) {
+            if (RootTile *root = tm->rootTile(desktop)) {
+                valid.insert(root);
+            }
+        }
+    }
+    m_managedRoots.intersect(valid);
+}
+
+void Ki3Tiler::enforceUniqueDesktops()
+{
+    // KWin gives a freshly plugged output desktop 1 by default
+    // (initialDesktopForNewOutput), duplicating whatever another screen shows.
+    // For each output whose desktop is already shown on an earlier output, move
+    // it to a free desktop so each number lives on exactly one screen.
+    VirtualDesktopManager *vdm = VirtualDesktopManager::self();
+    const auto outputs = workspace()->outputs();
+    for (int i = 0; i < outputs.size(); ++i) {
+        VirtualDesktop *desktop = vdm->currentDesktop(outputs[i]);
+        bool duplicate = (desktop == nullptr);
+        for (int j = 0; j < i && !duplicate; ++j) {
+            if (vdm->currentDesktop(outputs[j]) == desktop) {
+                duplicate = true;
+            }
+        }
+        if (!duplicate) {
+            continue;
+        }
+        if (VirtualDesktop *free = firstFreeDesktop()) {
+            vdm->setCurrent(free, outputs[i]);
+            qCDebug(KWIN_KI3) << "reconcile: output" << (void *)outputs[i]
+                              << "-> free desktop" << free->x11DesktopNumber();
+        }
+    }
+}
+
+void Ki3Tiler::retileHomelessWindows()
+{
+    const auto windows = workspace()->windows();
+    for (Window *window : windows) {
+        if (!shouldManage(window)) {
+            // No longer manageable (e.g. its output vanished and rules changed);
+            // drop any stale bookkeeping.
+            if (m_leafForWindow.contains(window)) {
+                forgetWindow(window);
+            }
+            continue;
+        }
+        auto it = m_leafForWindow.find(window);
+        if (it == m_leafForWindow.end()) {
+            // Relocated onto an output we weren't tracking it on -> tile it.
+            insertWindow(window);
+            continue;
+        }
+        CustomTile *leaf = it.value();
+        RootTile *want = rootForWindow(window);
+        if (!leaf || (want && leaf->rootTile() != want)) {
+            // Tile destroyed by an unplug, or window moved to another tree.
+            forgetWindow(window);
+            insertWindow(window);
+        }
+    }
+}
+
+void Ki3Tiler::ensureSaneFocus()
+{
+    Window *active = workspace()->activeWindow();
+    // isShown() ignores virtual-desktop visibility, so also require the window to
+    // be on its output's current desktop; otherwise focus is on a hidden window.
+    if (active && active->isShown() && active->isOnCurrentDesktop()) {
+        return;
+    }
+    qCDebug(KWIN_KI3) << "reconcile: focus was hidden/gone, refocusing active output";
+    focusOutput(workspace()->activeOutput());
+}
+
+void Ki3Tiler::switchToWorkspace(int number)
+{
+    VirtualDesktop *desktop = ensureDesktop(number);
     if (!desktop) {
         return;
     }
-    qCDebug(KWIN_KI3) << "switch to workspace" << number << "on output" << (void *)focusedOutput();
-    vdm->setCurrent(desktop, focusedOutput());
+
+    // i3/sway: a desktop lives on exactly one screen. If it is already shown
+    // somewhere, just move focus to that output rather than duplicating it.
+    if (LogicalOutput *shown = outputShowingDesktop(desktop)) {
+        qCDebug(KWIN_KI3) << "switch to workspace" << number
+                          << "- already shown, focusing output" << (void *)shown;
+        focusOutput(shown);
+        return;
+    }
+
+    // Hidden: raise it on its home output (where its windows already live), or
+    // on the focused output if it has none yet. setCurrent on that output alone
+    // keeps the one-desktop-per-screen invariant.
+    LogicalOutput *home = outputForDesktop(desktop);
+    if (!home) {
+        home = focusedOutput();
+    }
+    qCDebug(KWIN_KI3) << "switch to workspace" << number << "on output" << (void *)home;
+    VirtualDesktopManager::self()->setCurrent(desktop, home);
+    focusOutput(home);
 }
 
 void Ki3Tiler::moveActiveToWorkspace(int number)
@@ -505,20 +781,26 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
     if (!window || !shouldManage(window)) {
         return;
     }
-    VirtualDesktopManager *vdm = VirtualDesktopManager::self();
-    if (vdm->count() < uint(number)) {
-        vdm->setCount(number);
-    }
-    VirtualDesktop *desktop = vdm->desktops().value(number - 1);
+    VirtualDesktop *desktop = ensureDesktop(number);
     if (!desktop || window->isOnDesktop(desktop)) {
         return;
     }
 
-    // Detach from the current desktop's tree, move it, then tile it into the
-    // target desktop's tree (geometry is applied when that desktop is shown).
+    // i3/sway: the target desktop lives on one screen, so the window must follow
+    // it there. If the desktop has no home yet, the window's current output
+    // becomes that home. Detach from the old tree, move, then tile into the
+    // target (output, desktop) tree — geometry applies when that desktop shows.
+    LogicalOutput *home = outputForDesktop(desktop, window);
+    if (!home) {
+        home = outputShowingDesktop(desktop);
+    }
     forgetWindow(window);
     window->setDesktops({desktop});
-    qCDebug(KWIN_KI3) << "move window to workspace" << number;
+    if (home && home != window->output()) {
+        window->sendToOutput(home);
+    }
+    qCDebug(KWIN_KI3) << "move window to workspace" << number
+                      << "on output" << (void *)window->output();
     insertWindow(window);
 }
 
