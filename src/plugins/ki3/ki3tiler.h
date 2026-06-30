@@ -48,8 +48,11 @@ public Q_SLOTS:
     /** 1-based current desktop number shown on @p outputName, or 0 if unknown. */
     Q_SCRIPTABLE int currentDesktopNumber(const QString &outputName) const;
 
-    /** Total fixed desktop count (always 10, see the ctor). */
+    /** Number of currently live desktops. */
     Q_SCRIPTABLE int desktopCount() const;
+
+    /** Workspace numbers (parsed from desktop names) of all currently live desktops, in order. */
+    Q_SCRIPTABLE QList<int> liveDesktopNumbers() const;
 
     /** D-Bus wrapper for switchToWorkspace(), for the ki3-pager plasmoid. */
     Q_SCRIPTABLE void dbusSwitchToWorkspace(int number);
@@ -96,8 +99,30 @@ private:
     /** Move the active window to workspace @p number (1-based), following it to its output. */
     void moveActiveToWorkspace(int number);
 
-    /** Ensure desktop @p number exists (growing the count) and return it. */
-    VirtualDesktop *ensureDesktop(int number);
+    /** Find the live desktop with user-facing number @p n (by name), or nullptr. */
+    VirtualDesktop *desktopByNumber(int n) const;
+
+    /**
+     * Return the live desktop for number @p n, creating it (with name == n) if
+     * it does not yet exist. Inserts in sorted order so the pager stays ordered.
+     */
+    VirtualDesktop *getOrCreateDesktop(int n);
+
+    /**
+     * Create a new desktop whose name is the smallest positive integer not
+     * already used as a desktop name. Used when a new output needs a workspace.
+     */
+    VirtualDesktop *createFreshDesktop();
+
+    /**
+     * Remove every desktop that is not currently shown on any output and has no
+     * windows. Called deferred (via schedulePrune) so KWin finishes window
+     * destruction before we check occupancy.
+     */
+    void pruneEmptyDesktops();
+
+    /** Queue a single (coalesced) pruneEmptyDesktops after the current event. */
+    void schedulePrune();
 
     /**
      * Give each output a distinct starting desktop (output i -> desktop i+1) so
@@ -213,6 +238,9 @@ private:
 
     // Coalesces output plug/unplug events into a single deferred reconcile.
     bool m_reconcilePending = false;
+
+    // Coalesces pruneEmptyDesktops calls after window removal / workspace switch.
+    bool m_prunePending = false;
 };
 
 } // namespace KWin
