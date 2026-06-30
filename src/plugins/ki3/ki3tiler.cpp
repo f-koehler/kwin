@@ -47,11 +47,11 @@ Ki3Tiler::Ki3Tiler()
     connect(ws, &Workspace::outputAdded, this, &Ki3Tiler::scheduleReconcile);
     connect(ws, &Workspace::outputRemoved, this, &Ki3Tiler::scheduleReconcile);
 
-    // i3/sway model: each output independently shows one workspace, and there
-    // are 10 fixed workspaces (Meta+1..0). Unlike Plasma's default (one desktop
-    // spanning all outputs), a desktop number here exists on exactly one screen.
+    // i3/sway model: each output independently shows one workspace. Unlike
+    // Plasma's default (one desktop spanning all outputs), a desktop number here
+    // exists on exactly one screen, and only desktops that are either shown or
+    // occupied by windows exist at all — empty desktops are removed on the fly.
     VirtualDesktopManager::self()->setPerOutputVirtualDesktops(true);
-    VirtualDesktopManager::self()->setCount(10);
     assignInitialDesktops();
 
     registerShortcuts();
@@ -69,6 +69,11 @@ Ki3Tiler::Ki3Tiler()
         QDBusConnection::ExportScriptableSlots | QDBusConnection::ExportScriptableSignals);
     connect(VirtualDesktopManager::self(), &VirtualDesktopManager::currentChanged,
             this, &Ki3Tiler::desktopsChanged);
+    // Notify the pager whenever the set of desktops changes (dynamic add/remove).
+    connect(VirtualDesktopManager::self(), &VirtualDesktopManager::desktopAdded,
+            this, [this](VirtualDesktop *) { Q_EMIT desktopsChanged(); });
+    connect(VirtualDesktopManager::self(), &VirtualDesktopManager::desktopRemoved,
+            this, [this](VirtualDesktop *) { Q_EMIT desktopsChanged(); });
 }
 
 QStringList Ki3Tiler::outputNames() const
@@ -88,7 +93,10 @@ int Ki3Tiler::currentDesktopNumber(const QString &outputName) const
     for (LogicalOutput *output : outputs) {
         if (output->name() == outputName) {
             VirtualDesktop *desktop = VirtualDesktopManager::self()->currentDesktop(output);
-            return desktop ? desktop->x11DesktopNumber() : 0;
+            if (!desktop) return 0;
+            bool ok;
+            const int n = desktop->name().toInt(&ok);
+            return ok ? n : 0;
         }
     }
     return 0;
@@ -97,6 +105,19 @@ int Ki3Tiler::currentDesktopNumber(const QString &outputName) const
 int Ki3Tiler::desktopCount() const
 {
     return VirtualDesktopManager::self()->count();
+}
+
+QList<int> Ki3Tiler::liveDesktopNumbers() const
+{
+    QList<int> numbers;
+    for (VirtualDesktop *d : VirtualDesktopManager::self()->desktops()) {
+        bool ok;
+        const int n = d->name().toInt(&ok);
+        if (ok) {
+            numbers.append(n);
+        }
+    }
+    return numbers; // already in insertion order, which we keep sorted
 }
 
 void Ki3Tiler::dbusSwitchToWorkspace(int number)
@@ -355,6 +376,9 @@ void Ki3Tiler::handleWindowRemoved(Window *window)
 {
     m_floatingWindows.remove(window);
     forgetWindow(window);
+    // Deferred: let KWin finish destroying the window before we check whether
+    // its desktop became empty (the window may still appear in workspace()->windows()).
+    schedulePrune();
 }
 
 CustomTile *Ki3Tiler::currentLeaf() const
@@ -543,28 +567,107 @@ LogicalOutput *Ki3Tiler::focusedOutput() const
     return workspace()->activeOutput();
 }
 
-VirtualDesktop *Ki3Tiler::ensureDesktop(int number)
+VirtualDesktop *Ki3Tiler::desktopByNumber(int n) const
 {
-    if (number < 1) {
+    if (n < 1) {
         return nullptr;
     }
-    VirtualDesktopManager *vdm = VirtualDesktopManager::self();
-    if (vdm->count() < uint(number)) {
-        vdm->setCount(number);
+    const QString name = QString::number(n);
+    for (VirtualDesktop *d : VirtualDesktopManager::self()->desktops()) {
+        if (d->name() == name) {
+            return d;
+        }
     }
-    return vdm->desktops().value(number - 1);
+    return nullptr;
+}
+
+VirtualDesktop *Ki3Tiler::getOrCreateDesktop(int n)
+{
+    if (n < 1) {
+        return nullptr;
+    }
+    if (VirtualDesktop *existing = desktopByNumber(n)) {
+        return existing;
+    }
+    // Insert in name-sorted order so the pager displays them in numeric order.
+    VirtualDesktopManager *vdm = VirtualDesktopManager::self();
+    const auto desktops = vdm->desktops();
+    uint pos = uint(desktops.size());
+    for (uint i = 0; i < uint(desktops.size()); ++i) {
+        bool ok;
+        const int existing_n = desktops[int(i)]->name().toInt(&ok);
+        if (ok && existing_n > n) {
+            pos = i;
+            break;
+        }
+    }
+    qCDebug(KWIN_KI3) << "creating desktop" << n << "at position" << pos;
+    return vdm->createVirtualDesktop(pos, QString::number(n));
+}
+
+VirtualDesktop *Ki3Tiler::createFreshDesktop()
+{
+    const auto desktops = VirtualDesktopManager::self()->desktops();
+    QSet<int> used;
+    for (VirtualDesktop *d : desktops) {
+        bool ok;
+        const int n = d->name().toInt(&ok);
+        if (ok) {
+            used.insert(n);
+        }
+    }
+    int number = 1;
+    while (used.contains(number)) {
+        ++number;
+    }
+    return getOrCreateDesktop(number);
+}
+
+void Ki3Tiler::schedulePrune()
+{
+    if (m_prunePending) {
+        return;
+    }
+    m_prunePending = true;
+    QMetaObject::invokeMethod(this, [this]() {
+        m_prunePending = false;
+        pruneEmptyDesktops();
+    }, Qt::QueuedConnection);
+}
+
+void Ki3Tiler::pruneEmptyDesktops()
+{
+    VirtualDesktopManager *vdm = VirtualDesktopManager::self();
+    // Iterate a copy: removeVirtualDesktop modifies the live list.
+    const QList<VirtualDesktop *> desktops = vdm->desktops();
+    for (VirtualDesktop *desktop : desktops) {
+        if (outputShowingDesktop(desktop)) {
+            continue; // currently visible on some screen
+        }
+        if (outputForDesktop(desktop)) {
+            continue; // has at least one window (even if hidden)
+        }
+        qCDebug(KWIN_KI3) << "pruning empty desktop" << desktop->name();
+        vdm->removeVirtualDesktop(desktop);
+    }
 }
 
 void Ki3Tiler::assignInitialDesktops()
 {
     VirtualDesktopManager *vdm = VirtualDesktopManager::self();
     const auto outputs = workspace()->outputs();
+    const int nOutputs = std::max(1, int(outputs.size()));
+
+    // Collapse to exactly nOutputs desktops so we start from a known state, then
+    // rename them "1".."nOutputs" and assign one per output.
+    vdm->setCount(uint(nOutputs));
     const auto desktops = vdm->desktops();
-    // One distinct desktop per screen so no number starts out duplicated:
-    // output 0 -> desktop 1, output 1 -> desktop 2, ...
-    for (int i = 0; i < outputs.size() && i < desktops.size(); ++i) {
-        vdm->setCurrent(desktops[i], outputs[i]);
-        qCDebug(KWIN_KI3) << "initial desktop" << (i + 1) << "-> output" << (void *)outputs[i];
+    for (int i = 0; i < nOutputs; ++i) {
+        desktops[i]->setName(QString::number(i + 1));
+        if (i < int(outputs.size())) {
+            vdm->setCurrent(desktops[i], outputs[i]);
+            qCDebug(KWIN_KI3) << "initial desktop" << (i + 1) << "-> output" << (void *)outputs[i];
+        }
     }
 }
 
@@ -699,10 +802,15 @@ void Ki3Tiler::enforceUniqueDesktops()
         if (!duplicate) {
             continue;
         }
-        if (VirtualDesktop *free = firstFreeDesktop()) {
+        VirtualDesktop *free = firstFreeDesktop();
+        if (!free) {
+            // All existing desktops are shown; create a new numbered one.
+            free = createFreshDesktop();
+        }
+        if (free) {
             vdm->setCurrent(free, outputs[i]);
             qCDebug(KWIN_KI3) << "reconcile: output" << (void *)outputs[i]
-                              << "-> free desktop" << free->x11DesktopNumber();
+                              << "-> desktop" << free->name();
         }
     }
 }
@@ -749,7 +857,7 @@ void Ki3Tiler::ensureSaneFocus()
 
 void Ki3Tiler::switchToWorkspace(int number)
 {
-    VirtualDesktop *desktop = ensureDesktop(number);
+    VirtualDesktop *desktop = getOrCreateDesktop(number);
     if (!desktop) {
         return;
     }
@@ -760,12 +868,12 @@ void Ki3Tiler::switchToWorkspace(int number)
         qCDebug(KWIN_KI3) << "switch to workspace" << number
                           << "- already shown, focusing output" << (void *)shown;
         focusOutput(shown);
+        schedulePrune(); // the previous desktop we drifted from may now be empty
         return;
     }
 
-    // Hidden: raise it on its home output (where its windows already live), or
-    // on the focused output if it has none yet. setCurrent on that output alone
-    // keeps the one-desktop-per-screen invariant.
+    // Hidden (or freshly created): raise it on its home output (where its windows
+    // already live), or on the focused output if it has none yet.
     LogicalOutput *home = outputForDesktop(desktop);
     if (!home) {
         home = focusedOutput();
@@ -773,6 +881,7 @@ void Ki3Tiler::switchToWorkspace(int number)
     qCDebug(KWIN_KI3) << "switch to workspace" << number << "on output" << (void *)home;
     VirtualDesktopManager::self()->setCurrent(desktop, home);
     focusOutput(home);
+    schedulePrune(); // the desktop we just left may now be empty
 }
 
 void Ki3Tiler::moveActiveToWorkspace(int number)
@@ -781,7 +890,7 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
     if (!window || !shouldManage(window)) {
         return;
     }
-    VirtualDesktop *desktop = ensureDesktop(number);
+    VirtualDesktop *desktop = getOrCreateDesktop(number);
     if (!desktop || window->isOnDesktop(desktop)) {
         return;
     }
@@ -802,6 +911,7 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
     qCDebug(KWIN_KI3) << "move window to workspace" << number
                       << "on output" << (void *)window->output();
     insertWindow(window);
+    schedulePrune(); // the source desktop may now be empty
 }
 
 void Ki3Tiler::handleWindowActivated(Window *window)
