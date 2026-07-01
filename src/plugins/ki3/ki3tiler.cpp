@@ -25,6 +25,7 @@
 #include <QAction>
 #include <QDBusConnection>
 #include <QProcess>
+#include <QQuickWindow>
 
 #include <functional>
 
@@ -32,10 +33,18 @@ namespace KWin
 {
 
 Ki3Tiler::Ki3Tiler()
+    : m_splitIndicatorWindow(std::make_unique<QQuickWindow>())
 {
     qCInfo(KWIN_KI3) << "ki3 tiling plugin loaded";
 
     m_nonTileableRules = loadNonTileableRules();
+
+    // Never intercepts clicks/keyboard, never becomes "the active window".
+    m_splitIndicatorWindow->setFlags(Qt::BypassWindowManagerHint | Qt::FramelessWindowHint
+                                     | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus);
+    // TODO: deliberately garish for now, to confirm the indicator is visible
+    // at all; swap for a subtler accent colour once that's confirmed.
+    m_splitIndicatorWindow->setColor(QColor(255, 0, 0));
 
     Workspace *ws = Workspace::self();
     connect(ws, &Workspace::windowAdded, this, &Ki3Tiler::handleWindowAdded);
@@ -60,6 +69,7 @@ Ki3Tiler::Ki3Tiler()
     for (Window *window : ws->windows()) {
         handleWindowAdded(window);
     }
+    updateSplitIndicator();
 
     // Export /Ki3 on KWin's own "org.kde.KWin" service (already owned by this
     // process via its DBusInterface, alongside /Effects, /Compositor, ...) so
@@ -295,6 +305,9 @@ bool Ki3Tiler::shouldManage(Window *window) const
 {
     return window
         && window->isClient() // managed by KWin (has placement control)
+        && !window->isInternal() // KWin's own QQuickWindows (e.g. our split
+                                 // indicator's Outline) report isClient()
+                                 // and windowType() == Normal too
         && window->isNormalWindow()
         && !window->isSpecialWindow()
         && window->isResizable()
@@ -458,6 +471,41 @@ CustomTile *Ki3Tiler::currentLeaf() const
     return m_lastFocusedLeaf;
 }
 
+void Ki3Tiler::updateSplitIndicator()
+{
+    CustomTile *leaf = currentLeaf();
+
+    if (m_splitIndicatorLeaf != leaf) {
+        if (m_splitIndicatorLeaf) {
+            disconnect(m_splitIndicatorLeaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::updateSplitIndicator);
+        }
+        m_splitIndicatorLeaf = leaf;
+        if (leaf) {
+            connect(leaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::updateSplitIndicator);
+        }
+    }
+
+    // Only meaningful on an actual leaf holding a window that is presently
+    // visible; a bare root, a tile mid-restructure (childCount() > 0), or a
+    // leaf left over on a desktop we've since switched away from has nothing
+    // to highlight.
+    Window *window = (leaf && leaf->childCount() == 0 && !leaf->windows().isEmpty())
+        ? leaf->windows().constFirst()
+        : nullptr;
+    if (!window || !window->isShown() || !window->isOnCurrentDesktop()) {
+        m_splitIndicatorWindow->hide();
+        return;
+    }
+
+    static constexpr qreal thickness = 4.0;
+    const RectF geom = leaf->windowGeometry();
+    const RectF strip = (m_splitDirection == Tile::LayoutDirection::Horizontal)
+        ? RectF(geom.right() - thickness, geom.top(), thickness, geom.height())
+        : RectF(geom.left(), geom.bottom() - thickness, geom.width(), thickness);
+    m_splitIndicatorWindow->setGeometry(strip.toRect());
+    m_splitIndicatorWindow->show();
+}
+
 void Ki3Tiler::moveFocus(Qt::Edge edge)
 {
     CustomTile *leaf = currentLeaf();
@@ -603,6 +651,7 @@ void Ki3Tiler::setSplitDirection(Tile::LayoutDirection direction)
     m_splitDirection = direction;
     qCInfo(KWIN_KI3) << "split direction ->"
                      << (m_splitDirection == Tile::LayoutDirection::Horizontal ? "horizontal" : "vertical");
+    updateSplitIndicator();
 }
 
 void Ki3Tiler::toggleContainerLayout()
@@ -829,6 +878,9 @@ void Ki3Tiler::focusOutput(LogicalOutput *output)
         }
     }
     qCDebug(KWIN_KI3) << "focusOutput: no window to activate on" << (void *)output;
+    // No window here to trigger handleWindowActivated -> refresh the
+    // indicator ourselves so it doesn't linger on the previous output.
+    updateSplitIndicator();
 }
 
 VirtualDesktop *Ki3Tiler::firstFreeDesktop() const
@@ -1038,6 +1090,7 @@ void Ki3Tiler::handleWindowActivated(Window *window)
     if (it != m_leafForWindow.constEnd() && it.value()) {
         m_lastFocusedLeaf = it.value();
     }
+    updateSplitIndicator();
 }
 
 void Ki3Tiler::insertWindow(Window *window)
@@ -1055,6 +1108,7 @@ void Ki3Tiler::insertWindow(Window *window)
         m_leafForWindow[window] = root;
         m_lastFocusedLeaf = root;
         qCDebug(KWIN_KI3) << "insert (root):" << window->caption() << "->" << root->windowGeometry();
+        updateSplitIndicator();
         return;
     }
 
@@ -1083,6 +1137,7 @@ void Ki3Tiler::insertWindow(Window *window)
         qCDebug(KWIN_KI3) << "insert (sibling):" << window->caption()
                           << "siblings now" << parent->childCount()
                           << "->" << forNew->windowGeometry();
+        updateSplitIndicator();
         return;
     }
 
@@ -1097,6 +1152,7 @@ void Ki3Tiler::insertWindow(Window *window)
         target->manage(window);
         m_leafForWindow[window] = target;
         m_lastFocusedLeaf = target;
+        updateSplitIndicator();
         return;
     }
 
@@ -1116,6 +1172,7 @@ void Ki3Tiler::insertWindow(Window *window)
     m_leafForWindow[window] = forNew;
     m_lastFocusedLeaf = forNew;
     qCDebug(KWIN_KI3) << "insert (split):" << window->caption() << "->" << forNew->windowGeometry();
+    updateSplitIndicator();
 }
 
 void Ki3Tiler::forgetWindow(Window *window)
@@ -1151,6 +1208,7 @@ void Ki3Tiler::forgetWindow(Window *window)
             redistributeEvenly(parent);
         }
     }
+    updateSplitIndicator();
 }
 
 } // namespace KWin
