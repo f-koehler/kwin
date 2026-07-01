@@ -87,8 +87,20 @@ private:
     /** Grow/shrink the active leaf along @p orientation by @p deltaPixels. */
     void resizeActive(Qt::Orientation orientation, qreal deltaPixels);
 
-    /** Toggle the split direction applied to the next inserted window. */
-    void toggleSplitDirection();
+    /**
+     * Set the split direction applied to the next inserted window (i3/sway
+     * "split h"/"split v", `Meta+G`/`Meta+V` here since `Meta+H` is taken by
+     * vim-style focus-left).
+     */
+    void setSplitDirection(Tile::LayoutDirection direction);
+
+    /**
+     * Toggle the *current container's* layout direction between horizontal and
+     * vertical in place (i3/sway "layout toggle split", `Meta+E`). Distinct
+     * from setSplitDirection(): this rearranges the focused window's existing
+     * siblings rather than steering where the next new window lands.
+     */
+    void toggleContainerLayout();
 
     /** Toggle the active window between tiled and floating. */
     void toggleFloating();
