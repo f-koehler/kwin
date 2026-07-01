@@ -51,6 +51,7 @@ public:
     bool isInternal() const override;
     bool isLockScreen() const override;
     bool isOutline() const override;
+    bool isKi3Overlay() const override;
     RectF resizeWithChecks(const RectF &geometry, const QSizeF &size) const override;
     DecorationPolicy decorationPolicy() const override;
     void setDecorationPolicy(DecorationPolicy policy) override;

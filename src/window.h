@@ -816,6 +816,12 @@ public:
     virtual bool isLockScreen() const;
     virtual bool isInputMethod() const;
     virtual bool isOutline() const;
+    /**
+     * A ki3-plugin overlay (tab/stack header or split indicator). Placed in
+     * AboveLayer instead of the default internal-window OverlayLayer so it sits
+     * above ordinary windows but below menus/notifications/OSD.
+     */
+    virtual bool isKi3Overlay() const;
     virtual bool isInternal() const;
     virtual bool isPopupWindow() const;
 
@@ -2098,6 +2104,11 @@ inline bool Window::isInputMethod() const
 }
 
 inline bool Window::isOutline() const
+{
+    return false;
+}
+
+inline bool Window::isKi3Overlay() const
 {
     return false;
 }

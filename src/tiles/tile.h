@@ -97,6 +97,16 @@ public:
     qreal padding() const;
     void setPadding(qreal padding);
 
+    /**
+     * Pixels reserved at the top of windowGeometry() for a caller-drawn header
+     * (used by the ki3 plugin to make room for tabbed/stacked container title
+     * bars). Defaults to 0, so ordinary tiles are unaffected. Every window in
+     * the tile is re-laid-out below the reserve, and it survives redistribution
+     * because windowGeometry() applies it live.
+     */
+    qreal headerReserve() const;
+    void setHeaderReserve(qreal px);
+
     QSizeF minimumSize() const;
     void setMinimumSize(const QSizeF &size);
 
@@ -179,6 +189,7 @@ protected:
     QSizeF m_minimumSize = QSizeF(0.15, 0.15);
     QuickTileMode m_quickTileMode = QuickTileFlag::None;
     qreal m_padding = 4.0;
+    qreal m_headerReserve = 0.0;
 };
 
 } // namespace KWin

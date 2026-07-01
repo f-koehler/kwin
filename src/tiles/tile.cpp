@@ -178,7 +178,33 @@ RectF Tile::windowGeometry() const
     effectiveMargins.setBottom(m_relativeGeometry.bottom() < 1.0 ? m_padding / 2.0 : m_padding);
 
     const auto geom = absoluteGeometry();
-    return geom.intersected(m_tiling->output()->geometryF()) - effectiveMargins;
+    RectF windowGeom = geom.intersected(m_tiling->output()->geometryF()) - effectiveMargins;
+
+    // Reserve room at the top for a caller-drawn header (ki3 tabbed/stacked
+    // container title bars). Guarded so a tiny tile never gets a negative height.
+    if (m_headerReserve > 0.0 && windowGeom.height() > m_headerReserve) {
+        windowGeom.setTop(windowGeom.top() + m_headerReserve);
+    }
+    return windowGeom;
+}
+
+qreal Tile::headerReserve() const
+{
+    return m_headerReserve;
+}
+
+void Tile::setHeaderReserve(qreal px)
+{
+    if (m_headerReserve == px) {
+        return;
+    }
+    m_headerReserve = px;
+    Q_EMIT windowGeometryChanged();
+    if (isActive()) {
+        for (auto *w : std::as_const(m_windows)) {
+            w->moveResize(windowGeometry());
+        }
+    }
 }
 
 RectF Tile::maximizedWindowGeometry() const

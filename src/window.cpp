@@ -541,6 +541,9 @@ Layer Window::belongsToLayer() const
     if (isOutline()) {
         return NormalLayer;
     }
+    if (isKi3Overlay()) {
+        return AboveLayer;
+    }
     if (isUnmanaged() || isInternal()) {
         return OverlayLayer;
     }

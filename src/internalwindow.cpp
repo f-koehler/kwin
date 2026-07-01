@@ -235,6 +235,14 @@ bool InternalWindow::isOutline() const
     return false;
 }
 
+bool InternalWindow::isKi3Overlay() const
+{
+    if (m_handle) {
+        return m_handle->property("__ki3_overlay").toBool();
+    }
+    return false;
+}
+
 RectF InternalWindow::resizeWithChecks(const RectF &geometry, const QSizeF &size) const
 {
     if (!m_handle) {
