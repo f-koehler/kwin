@@ -231,10 +231,24 @@ void Ki3Tiler::registerShortcuts()
         spawnTerminal();
     });
 
-    // Split direction toggle (Meta + E) and float toggle (Meta + Shift + Space)
-    add(QStringLiteral("ki3_toggle_split"), i18n("ki3: Toggle Split Direction"),
+    // Split direction for the *next* window (i3/sway "split h"/"split v").
+    // Meta+H is already vim-style focus-left, so this uses Meta+G instead.
+    add(QStringLiteral("ki3_split_horizontal"), i18n("ki3: Split Horizontal"),
+        {QKeySequence(Qt::META | Qt::Key_G)},
+        [this]() {
+        setSplitDirection(Tile::LayoutDirection::Horizontal);
+    });
+    add(QStringLiteral("ki3_split_vertical"), i18n("ki3: Split Vertical"),
+        {QKeySequence(Qt::META | Qt::Key_V)},
+        [this]() {
+        setSplitDirection(Tile::LayoutDirection::Vertical);
+    });
+
+    // Toggle the current container's layout direction (i3/sway "layout toggle
+    // split") and float toggle (Meta + Shift + Space)
+    add(QStringLiteral("ki3_toggle_layout"), i18n("ki3: Toggle Container Layout"),
         {QKeySequence(Qt::META | Qt::Key_E)}, [this]() {
-        toggleSplitDirection();
+        toggleContainerLayout();
     });
     add(QStringLiteral("ki3_toggle_float"), i18n("ki3: Toggle Floating"),
         {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Space)}, [this]() {
@@ -578,13 +592,36 @@ void Ki3Tiler::resizeActive(Qt::Orientation orientation, qreal deltaPixels)
     qCDebug(KWIN_KI3) << "resize" << orientation << deltaPixels << "->" << leaf->relativeGeometry();
 }
 
-void Ki3Tiler::toggleSplitDirection()
+void Ki3Tiler::setSplitDirection(Tile::LayoutDirection direction)
 {
-    m_splitDirection = (m_splitDirection == Tile::LayoutDirection::Horizontal)
-        ? Tile::LayoutDirection::Vertical
-        : Tile::LayoutDirection::Horizontal;
+    m_splitDirection = direction;
     qCInfo(KWIN_KI3) << "split direction ->"
                      << (m_splitDirection == Tile::LayoutDirection::Horizontal ? "horizontal" : "vertical");
+}
+
+void Ki3Tiler::toggleContainerLayout()
+{
+    CustomTile *leaf = currentLeaf();
+    if (!leaf) {
+        return;
+    }
+    auto *parent = static_cast<CustomTile *>(leaf->parentTile());
+    if (!parent || !parent->isLayout()) {
+        return;
+    }
+    // Floating containers have no h/v orientation to flip.
+    if (parent->layoutDirection() != Tile::LayoutDirection::Horizontal
+        && parent->layoutDirection() != Tile::LayoutDirection::Vertical) {
+        return;
+    }
+
+    const auto newDirection = (parent->layoutDirection() == Tile::LayoutDirection::Horizontal)
+        ? Tile::LayoutDirection::Vertical
+        : Tile::LayoutDirection::Horizontal;
+    parent->setLayoutDirection(newDirection);
+    redistributeEvenly(parent);
+    qCInfo(KWIN_KI3) << "container layout ->"
+                     << (newDirection == Tile::LayoutDirection::Horizontal ? "horizontal" : "vertical");
 }
 
 void Ki3Tiler::toggleFloating()
