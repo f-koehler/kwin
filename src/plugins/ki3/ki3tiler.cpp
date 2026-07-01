@@ -255,6 +255,12 @@ void Ki3Tiler::registerShortcuts()
         toggleFloating();
     });
 
+    // Close the active window (i3/sway "kill").
+    add(QStringLiteral("ki3_close_window"), i18n("ki3: Close Window"),
+        {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Q)}, [this]() {
+        closeActiveWindow();
+    });
+
     // Workspaces: Meta+1..9,0 switch, Meta+Shift+1..9,0 move window. As in
     // i3/sway, Meta+0 is workspace 10.
     static constexpr Qt::Key digits[10] = {
@@ -642,6 +648,16 @@ void Ki3Tiler::toggleFloating()
         forgetWindow(window);
         window->requestTile(nullptr);
     }
+}
+
+void Ki3Tiler::closeActiveWindow()
+{
+    Window *window = workspace()->activeWindow();
+    if (!window || !window->isCloseable()) {
+        return;
+    }
+    qCDebug(KWIN_KI3) << "close" << window->caption();
+    window->closeWindow();
 }
 
 void Ki3Tiler::spawnTerminal()

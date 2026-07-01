@@ -188,6 +188,9 @@ private:
     /** Launch a terminal emulator (i3-style Meta+Return). */
     void spawnTerminal();
 
+    /** Close the active window (i3/sway-style Meta+Shift+Q). */
+    void closeActiveWindow();
+
     /** Whether ki3 should tile this window at all. */
     bool shouldManage(Window *window) const;
 
