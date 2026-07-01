@@ -16,6 +16,10 @@
 #include <QSet>
 #include <QStringList>
 
+#include <memory>
+
+class QQuickWindow;
+
 namespace KWin
 {
 
@@ -74,6 +78,16 @@ private:
 
     /** The leaf tile of the currently active or last focused window. */
     CustomTile *currentLeaf() const;
+
+    /**
+     * Refresh the on-screen hint showing where the next tiled window will
+     * land: a thin strip on the trailing edge of currentLeaf() (right edge
+     * for a Horizontal m_splitDirection, bottom edge for Vertical), or hidden
+     * when there is no current leaf. Re-tracks currentLeaf()'s
+     * windowGeometryChanged so the strip follows resizes/redistributes
+     * without every call site having to remember to refresh it.
+     */
+    void updateSplitIndicator();
 
     /** Move keyboard focus to the neighbouring leaf in @p edge direction. */
     void moveFocus(Qt::Edge edge);
@@ -256,6 +270,22 @@ private:
 
     // Coalesces pruneEmptyDesktops calls after window removal / workspace switch.
     bool m_prunePending = false;
+
+    // Compositor-drawn hint on the trailing edge of the current leaf, showing
+    // where the next tiled window will land. A plain internal QQuickWindow
+    // rather than KWin's own Outline: Window::belongsToLayer() special-cases
+    // isOutline() down to NormalLayer (same layer as ordinary windows, so it
+    // can be painted over depending on stacking order) for the drag/quick-tile
+    // preview's sake; an untagged internal window instead gets OverlayLayer
+    // (topmost), which is what a persistent hint actually needs. This also
+    // sidesteps outline.qml's shared Plasma theming, so we can pick our own
+    // (currently deliberately bright, for visibility testing) color directly.
+    std::unique_ptr<QQuickWindow> m_splitIndicatorWindow;
+
+    // The leaf m_splitIndicator is currently tracking (connected to for
+    // geometry updates), so updateSplitIndicator() can (re)subscribe only
+    // when it actually changes.
+    QPointer<CustomTile> m_splitIndicatorLeaf;
 };
 
 } // namespace KWin
