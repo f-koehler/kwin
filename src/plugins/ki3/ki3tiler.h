@@ -22,6 +22,7 @@ namespace KWin
 class CustomTile;
 class LogicalOutput;
 class RootTile;
+class SessionOsd;
 class VirtualDesktop;
 class Window;
 
@@ -188,6 +189,9 @@ private:
     /** Launch a terminal emulator (i3-style Meta+Return). */
     void spawnTerminal();
 
+    /** Show the combined session-action OSD (Lock/Logout/Suspend/Restart/Shutdown). */
+    void showSessionOsd();
+
     /** Whether ki3 should tile this window at all. */
     bool shouldManage(Window *window) const;
 
@@ -253,6 +257,9 @@ private:
 
     // Coalesces pruneEmptyDesktops calls after window removal / workspace switch.
     bool m_prunePending = false;
+
+    // Lazily created, reused across invocations of showSessionOsd().
+    SessionOsd *m_sessionOsd = nullptr;
 };
 
 } // namespace KWin

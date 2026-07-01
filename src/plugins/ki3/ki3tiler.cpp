@@ -13,6 +13,8 @@
 
 #include "core/output.h"
 #include "main.h"
+#include "sessionactions.h"
+#include "sessionosd.h"
 #include "tiles/customtile.h"
 #include "tiles/tilemanager.h"
 #include "virtualdesktops.h"
@@ -214,6 +216,10 @@ void Ki3Tiler::registerShortcuts()
         {QKeySequence(Qt::META | Qt::Key_E)}, [this]() { toggleContainerLayout(); });
     add(QStringLiteral("ki3_toggle_float"), i18n("ki3: Toggle Floating"),
         {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Space)}, [this]() { toggleFloating(); });
+
+    // Combined session-action OSD: Lock/Logout/Suspend/Restart/Shutdown.
+    add(QStringLiteral("ki3_session_osd"), i18n("ki3: Session Menu"),
+        {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_E)}, [this]() { showSessionOsd(); });
 
     // Workspaces: Meta+1..9,0 switch, Meta+Shift+1..9,0 move window. As in
     // i3/sway, Meta+0 is workspace 10.
@@ -588,6 +594,38 @@ void Ki3Tiler::spawnTerminal()
     process->startDetached();
     process->deleteLater();
     qCDebug(KWIN_KI3) << "spawn terminal";
+}
+
+void Ki3Tiler::showSessionOsd()
+{
+    if (!m_sessionOsd) {
+        m_sessionOsd = new SessionOsd();
+        connect(m_sessionOsd, &SessionOsd::triggered, this, [](SessionOsd::Action action) {
+            switch (action) {
+            case SessionOsd::Action::Lock:
+                SessionActions::lock();
+                break;
+            case SessionOsd::Action::Logout:
+                SessionActions::logout();
+                break;
+            case SessionOsd::Action::Suspend:
+                SessionActions::suspend();
+                break;
+            case SessionOsd::Action::Restart:
+                SessionActions::restart();
+                break;
+            case SessionOsd::Action::Shutdown:
+                SessionActions::shutdown();
+                break;
+            }
+        });
+    }
+
+    LogicalOutput *output = focusedOutput();
+    if (!output) {
+        return;
+    }
+    m_sessionOsd->popup(output->geometry());
 }
 
 LogicalOutput *Ki3Tiler::focusedOutput() const

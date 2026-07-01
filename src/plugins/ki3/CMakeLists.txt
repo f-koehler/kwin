@@ -14,6 +14,8 @@ target_sources(ki3 PRIVATE
     main.cpp
     ki3rules.cpp
     ki3tiler.cpp
+    sessionactions.cpp
+    sessionosd.cpp
 )
 
 target_link_libraries(ki3 PRIVATE
@@ -24,4 +26,5 @@ target_link_libraries(ki3 PRIVATE
     KF6::GlobalAccel
 
     Qt6::DBus
+    Qt6::Widgets
 )
