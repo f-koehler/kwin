@@ -18,12 +18,12 @@
 
 #include <memory>
 
-class QQuickWindow;
-
 namespace KWin
 {
 
 class CustomTile;
+class Ki3Header;
+class Ki3SolidOverlay;
 class LogicalOutput;
 class RootTile;
 class VirtualDesktop;
@@ -76,8 +76,68 @@ private:
     /** Register global shortcuts. */
     void registerShortcuts();
 
+    /**
+     * i3/sway container layouts beyond plain splits. A tab/stack "container" is
+     * represented as a *single leaf tile owning several windows* (KWin gives
+     * every window in a tile the same rect — tile.cpp:141-143 — i.e. they
+     * overlap, which is exactly a tab/stack group); ki3 layers on top which one
+     * is visible and (later) draws the header. Only tabbed/stacked leaves have a
+     * TabState; a plain split leaf has none.
+     */
+    enum class ContainerMode {
+        Tabbed, // one header row of tabs; cycle with focus left/right
+        Stacked, // stacked title rows; cycle with focus up/down
+    };
+    struct TabState
+    {
+        QList<QPointer<Window>> windows; // tab order
+        int active = 0; // index into windows of the visible one
+        ContainerMode mode = ContainerMode::Tabbed;
+        // The container's split direction before it was collapsed, restored on
+        // untab (i3/sway prev_split_layout).
+        Tile::LayoutDirection prevSplit = Tile::LayoutDirection::Horizontal;
+        std::shared_ptr<Ki3Header> header; // the title bar (created lazily)
+    };
+
     /** The leaf tile of the currently active or last focused window. */
     CustomTile *currentLeaf() const;
+
+    /**
+     * Collapse the focused container into a single tab/stack group leaf (i3/sway
+     * "layout tabbed"/"layout stacked", Meta+T/Meta+S). Re-invoking with the same
+     * mode splits it back out (untabContainer); invoking the other mode flips it
+     * in place. T0 spike: model + visibility only, no header UI yet.
+     */
+    void setContainerMode(ContainerMode mode);
+
+    /** Fan a tab/stack group leaf back out into an even split of its windows. */
+    void untabContainer(CustomTile *tile);
+
+    /** Advance the visible tab of @p tile by @p delta (wraps), and focus it. */
+    void cycleTab(CustomTile *tile, int delta);
+
+    /** Raise the active tab of @p tile above the others; prune dead windows. */
+    void updateTabVisibility(CustomTile *tile);
+
+    /**
+     * Recompute a tab/stack group's header: reserve the right header height on
+     * its tile, reposition + repaint the header window over the reserved strip,
+     * and hide it when the group is off the current desktop. Creates the header
+     * on first use and (re)connects the tile's geometry signal.
+     */
+    void refreshGroup(CustomTile *tile);
+
+    /** Refresh every tab/stack group (e.g. after a desktop switch). */
+    void refreshAllGroups();
+
+    /** Tear down a group's header and clear its tile's header reserve. */
+    void destroyGroupHeader(CustomTile *tile);
+
+    /** Slot: a group tile's geometry changed — reposition its header. */
+    void onGroupGeometryChanged();
+
+    /** Activate the tab at @p index within @p tile (from a header click). */
+    void activateTab(CustomTile *tile, int index);
 
     /**
      * Refresh the on-screen hint showing where the next tiled window will
@@ -262,6 +322,15 @@ private:
     // Windows the user has detached from tiling (floating).
     QSet<Window *> m_floatingWindows;
 
+    // Leaf tiles that are tab/stack groups (own several windows, one visible).
+    // Keyed by the group leaf; entries are dropped when the group empties.
+    QHash<CustomTile *, TabState> m_tabbed;
+
+    // Guards refreshGroup() against the re-entry triggered when setHeaderReserve
+    // emits windowGeometryChanged (which we listen to). The re-entrant call is a
+    // no-op; the outer call finishes positioning against the settled geometry.
+    bool m_refreshingGroup = false;
+
     // Rules (built-in + user config) for windows ki3 must never tile.
     QList<WindowRule> m_nonTileableRules;
 
@@ -272,15 +341,12 @@ private:
     bool m_prunePending = false;
 
     // Compositor-drawn hint on the trailing edge of the current leaf, showing
-    // where the next tiled window will land. A plain internal QQuickWindow
-    // rather than KWin's own Outline: Window::belongsToLayer() special-cases
-    // isOutline() down to NormalLayer (same layer as ordinary windows, so it
-    // can be painted over depending on stacking order) for the drag/quick-tile
-    // preview's sake; an untagged internal window instead gets OverlayLayer
-    // (topmost), which is what a persistent hint actually needs. This also
-    // sidesteps outline.qml's shared Plasma theming, so we can pick our own
-    // (currently deliberately bright, for visibility testing) color directly.
-    std::unique_ptr<QQuickWindow> m_splitIndicatorWindow;
+    // where the next tiled window will land. A plain internal QRasterWindow
+    // (Ki3SolidOverlay): renders through KWin's internal QPA backing store with
+    // no OpenGL/Qt-Quick RHI (a QQuickWindow crashes on the headless virtual
+    // backend, which has no GL context — see ki3-PLAN.md 2026-07-02). Tagged
+    // __ki3_overlay so belongsToLayer() places it in AboveLayer.
+    std::unique_ptr<Ki3SolidOverlay> m_splitIndicatorWindow;
 
     // The leaf m_splitIndicator is currently tracking (connected to for
     // geometry updates), so updateSplitIndicator() can (re)subscribe only
