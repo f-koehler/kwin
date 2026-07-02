@@ -1201,7 +1201,13 @@ LogicalOutput *Ki3Tiler::outputForDesktop(VirtualDesktop *desktop, Window *exclu
 {
     const auto windows = workspace()->windows();
     for (Window *w : windows) {
-        if (w != exclude && w->isClient() && w->isNormalWindow()
+        // KWin's InternalWindow (ki3's own split-indicator overlay, tab/stack
+        // headers) unconditionally reports windowType() == Normal and is always
+        // on all desktops (see InternalWindow::windowType()/setOnAllDesktops in
+        // internalwindow.cpp) -- without this check, whenever our own overlay
+        // happens to be visible it looks like "a real window on every desktop"
+        // and permanently blocks that desktop from ever being pruned.
+        if (w != exclude && !w->isInternal() && w->isClient() && w->isNormalWindow()
             && w->output() && w->isOnDesktop(desktop)) {
             return w->output();
         }
@@ -1221,7 +1227,10 @@ void Ki3Tiler::focusOutput(LogicalOutput *output)
     const auto &stacking = workspace()->stackingOrder();
     for (auto it = stacking.crbegin(); it != stacking.crend(); ++it) {
         Window *w = *it;
-        if (w && w->isClient() && w->isNormalWindow() && w->isShown()
+        // Exclude our own overlays (see outputForDesktop()): the split
+        // indicator is "shown" and "on every desktop" whenever it's visible,
+        // and being topmost it would otherwise steal focus from a real window.
+        if (w && !w->isInternal() && w->isClient() && w->isNormalWindow() && w->isShown()
             && w->isOnOutput(output) && w->isOnDesktop(desktop)) {
             workspace()->activateWindow(w);
             return;
