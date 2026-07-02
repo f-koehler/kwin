@@ -274,6 +274,20 @@ private:
     /** Insert a manageable window into its output/desktop tile tree. */
     void insertWindow(Window *window);
 
+    /**
+     * Place @p window at @p target, following i3 join rules: joins a tab/stack
+     * group as a new tab, becomes an evenly-redistributed sibling if @p target's
+     * parent already runs the current split direction, or otherwise splits
+     * @p target in the current split direction. Shared by insertWindow() (for
+     * brand-new windows, always after target — @p insertBefore false) and
+     * moveWindow() (for relocating an existing one, where @p insertBefore lets
+     * the sibling case land on the correct side of target — e.g. within an
+     * existing V[top,bottom] pair, moving the bottom window up must insert it
+     * *before* target or it lands back in its own vacated slot and nothing
+     * visibly changes).
+     */
+    void placeWindowAt(Window *window, CustomTile *target, bool insertBefore = false);
+
     /** Detach a window and collapse the tile it leaves behind. */
     void forgetWindow(Window *window);
 

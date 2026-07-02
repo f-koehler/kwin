@@ -623,10 +623,9 @@ void Ki3Tiler::moveWindow(Qt::Edge edge)
     if (!leaf || leaf->windows().isEmpty()) {
         return;
     }
-    // The swap below moves leaf->windows().constFirst(), which for a tab/stack
-    // group is one arbitrary member — pulling it out silently desyncs TabState.
-    // Moving windows into/out of a group is a full reparent (deferred); skip for
-    // now rather than corrupt the group.
+    // Moving a tab/stack group's window would pull an arbitrary member out and
+    // desync TabState. Moving windows into/out of a group is a full reparent
+    // (deferred); skip for now rather than corrupt the group.
     if (m_tabbed.contains(leaf)) {
         qCDebug(KWIN_KI3) << "move: within/out of a tab group not supported yet";
         return;
@@ -636,22 +635,48 @@ void Ki3Tiler::moveWindow(Qt::Edge edge)
         return;
     }
     if (m_tabbed.contains(target)) {
-        qCDebug(KWIN_KI3) << "move: swapping into a tab group not supported yet";
+        qCDebug(KWIN_KI3) << "move: into a tab group not supported yet";
         return;
     }
     Window *self = leaf->windows().constFirst();
-    Window *other = target->windows().constFirst();
-    if (self == other) {
+    if (self == target->windows().constFirst()) {
         return;
     }
 
-    // Swap the two windows between their leaves (manage() evacuates first).
-    target->manage(self);
-    leaf->manage(other);
-    m_leafForWindow[self] = target;
-    m_leafForWindow[other] = leaf;
-    m_lastFocusedLeaf = target;
-    qCDebug(KWIN_KI3) << "move" << edge << "swap" << leaf->relativeGeometry() << "<->" << target->relativeGeometry();
+    // A real remove+reinsert, not a positional swap: collapse the leaf `self`
+    // leaves behind and re-place it at `target` with the same tab/sibling/split
+    // rules a brand-new window gets (placeWindowAt), so the destination nests
+    // per i3 semantics — e.g. moving a window onto a leaf whose parent runs a
+    // different split direction than m_splitDirection actually splits that
+    // leaf — instead of just trading places with its neighbour.
+    //
+    // The sibling case needs to know which side of `target` to land on: moving
+    // *up*/*left* must insert before target, or (e.g. within an existing
+    // V[top,bottom] pair) the moved window lands back in the exact slot its own
+    // vacated leaf occupied and nothing visibly changes. Derived from target's
+    // *actual* container direction, not just the raw edge, since
+    // nextNonLayoutTileAt() can hand back a tile in a differently-oriented
+    // ancestor container.
+    auto *targetParent = static_cast<CustomTile *>(target->parentTile());
+    const bool insertBefore = targetParent
+        && ((targetParent->layoutDirection() == Tile::LayoutDirection::Horizontal && edge == Qt::LeftEdge)
+            || (targetParent->layoutDirection() == Tile::LayoutDirection::Vertical && edge == Qt::TopEdge));
+
+    CustomTile *parent = static_cast<CustomTile *>(leaf->parentTile());
+    auto *root = static_cast<RootTile *>(leaf->rootTile());
+
+    placeWindowAt(self, target, insertBefore); // manage() evacuates `self` from `leaf` internally
+
+    if (!leaf->isRoot() && leaf->childCount() == 0 && leaf->windows().isEmpty()) {
+        qCDebug(KWIN_KI3) << "move: collapse empty leaf left by" << self->caption();
+        leaf->remove();
+        resyncLeafMapping(root);
+        if (parent && parent->isLayout()) {
+            redistributeEvenly(parent);
+        }
+        updateSplitIndicator();
+    }
+    qCDebug(KWIN_KI3) << "move" << edge << self->caption();
     workspace()->activateWindow(self);
 }
 
@@ -1450,7 +1475,12 @@ void Ki3Tiler::insertWindow(Window *window)
         target = firstLeaf(root);
     }
 
-    // If the chosen container is a tab/stack group, the new window joins it as a
+    placeWindowAt(window, target);
+}
+
+void Ki3Tiler::placeWindowAt(Window *window, CustomTile *target, bool insertBefore)
+{
+    // If the chosen container is a tab/stack group, the window joins it as a
     // new tab rather than splitting the tree.
     if (auto it = m_tabbed.find(target); it != m_tabbed.end()) {
         target->manage(window);
@@ -1465,21 +1495,23 @@ void Ki3Tiler::insertWindow(Window *window)
         return;
     }
 
-    // i3 behaviour: if the focused leaf already lives in a layout running in the
-    // current split direction, add the new window as a *sibling* and rebalance
-    // all of them evenly (1:1:1...), rather than nesting + halving the focused
-    // cell (which would give 2:1:1). Only nest when the direction differs.
+    // i3 behaviour: if the target leaf already lives in a layout running in the
+    // current split direction, add the window as a *sibling* and rebalance all
+    // of them evenly (1:1:1...), rather than nesting + halving the target cell
+    // (which would give 2:1:1). Only nest when the direction differs.
     auto *parent = static_cast<CustomTile *>(target->parentTile());
     if (parent && parent->isLayout() && parent->layoutDirection() == m_splitDirection
         && target->childCount() == 0) {
+        const int position = insertBefore ? target->row() : target->row() + 1;
         CustomTile *forNew = parent->createChildAt(target->relativeGeometry(),
-                                                   m_splitDirection, target->row() + 1);
+                                                   m_splitDirection, position);
         forNew->manage(window);
         m_leafForWindow[window] = forNew;
         m_lastFocusedLeaf = forNew;
         redistributeEvenly(parent);
         qCDebug(KWIN_KI3) << "insert (sibling):" << window->caption()
                           << "siblings now" << parent->childCount()
+                          << "at position" << position
                           << "->" << forNew->windowGeometry();
         updateSplitIndicator();
         return;
