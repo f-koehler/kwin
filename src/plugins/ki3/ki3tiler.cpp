@@ -297,9 +297,11 @@ void Ki3Tiler::registerShortcuts()
         toggleFloating();
     });
 
-    // Container layouts (i3/sway "layout tabbed"/"layout stacked").
+    // Container layouts (i3/sway "layout tabbed"/"layout stacked"). Meta+W
+    // matches i3/sway's actual default, and takes it over from the Overview
+    // effect's default global shortcut (see also disableOverviewHotCorner()).
     add(QStringLiteral("ki3_layout_tabbed"), i18n("ki3: Tabbed Layout"),
-        {QKeySequence(Qt::META | Qt::Key_T)}, [this]() {
+        {QKeySequence(Qt::META | Qt::Key_W)}, [this]() {
         setContainerMode(ContainerMode::Tabbed);
     });
     add(QStringLiteral("ki3_layout_stacked"), i18n("ki3: Stacked Layout"),
