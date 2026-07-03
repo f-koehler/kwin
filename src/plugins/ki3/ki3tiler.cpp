@@ -884,6 +884,14 @@ void Ki3Tiler::toggleContainerLayout()
     if (!leaf) {
         return;
     }
+
+    // The focused leaf is itself a tabbed/stacked group: collapse it back to a
+    // plain split, mirroring setContainerMode()'s same-key-toggles-back rule.
+    if (m_tabbed.contains(leaf)) {
+        untabContainer(leaf);
+        return;
+    }
+
     auto *parent = static_cast<CustomTile *>(leaf->parentTile());
     if (!parent || !parent->isLayout()) {
         return;
