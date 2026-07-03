@@ -1645,6 +1645,7 @@ void Ki3Tiler::insertWindow(Window *window)
         root->manage(window);
         m_leafForWindow[window] = root;
         m_lastFocusedLeaf = root;
+        window->setNoBorder(true); // i3-style: tiled windows never show their own title bar
         qCDebug(KWIN_KI3) << "insert (root):" << window->caption() << "->" << root->windowGeometry();
         updateSplitIndicator();
         return;
@@ -1692,6 +1693,7 @@ void Ki3Tiler::placeWindowAt(Window *window, CustomTile *target, bool insertBefo
         forNew->manage(window);
         m_leafForWindow[window] = forNew;
         m_lastFocusedLeaf = forNew;
+        window->setNoBorder(true);
         redistributeEvenly(parent);
         qCDebug(KWIN_KI3) << "insert (sibling):" << window->caption()
                           << "siblings now" << parent->childCount()
@@ -1712,6 +1714,7 @@ void Ki3Tiler::placeWindowAt(Window *window, CustomTile *target, bool insertBefo
         target->manage(window);
         m_leafForWindow[window] = target;
         m_lastFocusedLeaf = target;
+        window->setNoBorder(true);
         updateSplitIndicator();
         return;
     }
@@ -1731,6 +1734,7 @@ void Ki3Tiler::placeWindowAt(Window *window, CustomTile *target, bool insertBefo
     forNew->manage(window);
     m_leafForWindow[window] = forNew;
     m_lastFocusedLeaf = forNew;
+    window->setNoBorder(true);
     qCDebug(KWIN_KI3) << "insert (split):" << window->caption() << "->" << forNew->windowGeometry();
     updateSplitIndicator();
 }
@@ -1749,6 +1753,9 @@ void Ki3Tiler::forgetWindow(Window *window)
     if (!tile) {
         return;
     }
+    if (!window->isDeleted()) {
+        window->setNoBorder(false); // leaving the tile tree: restore its own title bar
+    }
 
     // Tab/stack group member: drop it from the group. As long as at least one
     // tab remains, the leaf stays put (still owns the survivors) — only refresh
@@ -1756,9 +1763,6 @@ void Ki3Tiler::forgetWindow(Window *window)
     if (auto ti = m_tabbed.find(tile); ti != m_tabbed.end()) {
         tile->forget(window);
         ti->windows.removeAll(window);
-        if (!window->isDeleted()) {
-            window->setNoBorder(false); // leaving the group: restore its title bar
-        }
         if (!ti->windows.isEmpty()) {
             ti->active = std::clamp(ti->active, 0, int(ti->windows.size()) - 1);
             m_lastFocusedLeaf = tile;
