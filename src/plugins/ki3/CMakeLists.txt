@@ -19,6 +19,7 @@ target_sources(ki3 PRIVATE
 
 target_link_libraries(ki3 PRIVATE
     kwin
+    KWinEffectsInterface
 
     KF6::ConfigCore
     KF6::I18n
