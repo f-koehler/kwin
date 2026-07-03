@@ -45,6 +45,13 @@ Ki3Tiler::Ki3Tiler()
     // at all; swap for a subtler accent colour once that's confirmed.
     m_splitIndicatorWindow->setColor(QColor(255, 0, 0));
 
+    // Amber, distinct from the split indicator's red, matching the "neutral
+    // warning" colour ki3-pager uses for its own resize-mode indication.
+    for (auto &strip : m_resizeBorder) {
+        strip = std::make_unique<Ki3SolidOverlay>();
+        strip->setColor(QColor(0xff, 0xa5, 0x00));
+    }
+
     Workspace *ws = Workspace::self();
     connect(ws, &Workspace::windowAdded, this, &Ki3Tiler::handleWindowAdded);
     connect(ws, &Workspace::windowRemoved, this, &Ki3Tiler::handleWindowRemoved);
@@ -63,6 +70,7 @@ Ki3Tiler::Ki3Tiler()
     assignInitialDesktops();
 
     registerShortcuts();
+    registerResizeModeShortcuts();
 
     // Adopt any windows that already exist when the plugin loads.
     for (Window *window : ws->windows()) {
@@ -148,7 +156,8 @@ void Ki3Tiler::dbusMoveActiveToWorkspace(int number)
 void Ki3Tiler::registerShortcuts()
 {
     const auto add = [this](const QString &name, const QString &text,
-                            const QList<QKeySequence> &keys, std::function<void()> callback) {
+                            const QList<QKeySequence> &keys, std::function<void()> callback,
+                            bool activeDuringResizeMode = false) {
         QAction *action = new QAction(this);
         action->setObjectName(name);
         action->setText(text);
@@ -158,7 +167,17 @@ void Ki3Tiler::registerShortcuts()
             KGlobalAccel::stealShortcutSystemwide(key);
         }
         KGlobalAccel::self()->setShortcut(action, keys, KGlobalAccel::NoAutoloading);
-        connect(action, &QAction::triggered, this, std::move(callback));
+        // i3/sway's resize mode grabs the keyboard, so nothing but the mode's
+        // own bare-key resize/exit shortcuts (registerResizeModeShortcuts())
+        // and the Meta+R toggle itself (activeDuringResizeMode) fire while
+        // it's active. ki3 has no real grab, so every *other* global shortcut
+        // approximates it by no-opping here instead.
+        connect(action, &QAction::triggered, this, [this, callback = std::move(callback), activeDuringResizeMode]() {
+            if (m_resizeMode && !activeDuringResizeMode) {
+                return;
+            }
+            callback();
+        });
         const QList<QKeySequence> active = KGlobalAccel::self()->shortcut(action);
         for (const QKeySequence &key : keys) {
             if (!active.contains(key)) {
@@ -168,27 +187,36 @@ void Ki3Tiler::registerShortcuts()
         }
     };
 
-    // Focus (Meta + h/j/k/l, also arrow keys)
+    // Focus (Meta + h/j/k/l, also arrow keys). Inert while resize mode is
+    // active -- see the `add` lambda above and registerResizeModeShortcuts().
     add(QStringLiteral("ki3_focus_left"), i18n("ki3: Focus Left"),
         {QKeySequence(Qt::META | Qt::Key_H), QKeySequence(Qt::META | Qt::Key_Left)},
         [this]() {
-        moveFocus(Qt::LeftEdge);
+        handleDirectional(Qt::LeftEdge);
     });
     add(QStringLiteral("ki3_focus_down"), i18n("ki3: Focus Down"),
         {QKeySequence(Qt::META | Qt::Key_J), QKeySequence(Qt::META | Qt::Key_Down)},
         [this]() {
-        moveFocus(Qt::BottomEdge);
+        handleDirectional(Qt::BottomEdge);
     });
     add(QStringLiteral("ki3_focus_up"), i18n("ki3: Focus Up"),
         {QKeySequence(Qt::META | Qt::Key_K), QKeySequence(Qt::META | Qt::Key_Up)},
         [this]() {
-        moveFocus(Qt::TopEdge);
+        handleDirectional(Qt::TopEdge);
     });
     add(QStringLiteral("ki3_focus_right"), i18n("ki3: Focus Right"),
         {QKeySequence(Qt::META | Qt::Key_L), QKeySequence(Qt::META | Qt::Key_Right)},
         [this]() {
-        moveFocus(Qt::RightEdge);
+        handleDirectional(Qt::RightEdge);
     });
+
+    // Resize mode (i3/sway "mode resize"): always live (activeDuringResizeMode)
+    // so Meta+R can toggle the mode back off from inside it too.
+    add(QStringLiteral("ki3_toggle_resize_mode"), i18n("ki3: Toggle Resize Mode"),
+        {QKeySequence(Qt::META | Qt::Key_R)}, [this]() {
+        toggleResizeMode();
+    },
+        /*activeDuringResizeMode=*/true);
 
     // Move/swap (Meta + Shift + h/j/k/l, also arrow keys)
     add(QStringLiteral("ki3_move_left"), i18n("ki3: Move Left"),
@@ -296,6 +324,52 @@ void Ki3Tiler::registerShortcuts()
             moveActiveToWorkspace(n);
         });
     }
+}
+
+void Ki3Tiler::registerResizeModeShortcuts()
+{
+    const auto add = [this](const QString &name, const QString &text,
+                            const QList<QKeySequence> &keys, std::function<void()> callback) {
+        QAction *action = new QAction(this);
+        action->setObjectName(name);
+        action->setText(text);
+        // Deliberately left unbound here -- KGlobalAccel::setShortcut() is
+        // called with these keys by setResizeMode() only while the mode is
+        // active, and cleared again on exit. Binding bare "h" etc. up front
+        // (like registerShortcuts()'s `add`) would grab that key globally
+        // forever, breaking normal typing in every other application.
+        connect(action, &QAction::triggered, this, std::move(callback));
+        m_resizeModeActions.append({action, keys});
+    };
+
+    static constexpr qreal step = 50;
+    add(QStringLiteral("ki3_resize_mode_shrink_h"), i18n("ki3: Resize Mode: Shrink Width"),
+        {QKeySequence(Qt::Key_H), QKeySequence(Qt::Key_Left)},
+        [this]() {
+        resizeActive(Qt::Horizontal, -step);
+    });
+    add(QStringLiteral("ki3_resize_mode_grow_h"), i18n("ki3: Resize Mode: Grow Width"),
+        {QKeySequence(Qt::Key_L), QKeySequence(Qt::Key_Right)},
+        [this]() {
+        resizeActive(Qt::Horizontal, step);
+    });
+    add(QStringLiteral("ki3_resize_mode_shrink_v"), i18n("ki3: Resize Mode: Shrink Height"),
+        {QKeySequence(Qt::Key_K), QKeySequence(Qt::Key_Up)},
+        [this]() {
+        resizeActive(Qt::Vertical, -step);
+    });
+    add(QStringLiteral("ki3_resize_mode_grow_v"), i18n("ki3: Resize Mode: Grow Height"),
+        {QKeySequence(Qt::Key_J), QKeySequence(Qt::Key_Down)},
+        [this]() {
+        resizeActive(Qt::Vertical, step);
+    });
+    // i3/sway also leave resize mode on Escape/Return, in addition to
+    // re-pressing the mode's own Meta+R toggle.
+    add(QStringLiteral("ki3_resize_mode_exit"), i18n("ki3: Resize Mode: Exit"),
+        {QKeySequence(Qt::Key_Escape), QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)},
+        [this]() {
+        setResizeMode(false);
+    });
 }
 
 Ki3Tiler::~Ki3Tiler() = default;
@@ -464,6 +538,12 @@ void Ki3Tiler::handleWindowRemoved(Window *window)
 {
     m_floatingWindows.remove(window);
     forgetWindow(window);
+    // Nothing left to resize (e.g. the last window on a desktop just closed):
+    // leaving resize mode on would silently do nothing on the next keypress
+    // and strand the border indicator's "mode is active" implication.
+    if (m_resizeMode && !currentLeaf()) {
+        setResizeMode(false);
+    }
     // Deferred: let KWin finish destroying the window before we check whether
     // its desktop became empty (the window may still appear in workspace()->windows()).
     schedulePrune();
@@ -482,6 +562,12 @@ CustomTile *Ki3Tiler::currentLeaf() const
 
 void Ki3Tiler::updateSplitIndicator()
 {
+    // Refreshed unconditionally (not just when the split indicator itself has
+    // something to show below) so it also runs -- and hides the border -- when
+    // the current leaf disappears, e.g. the last window on a desktop closing
+    // while resize mode is active.
+    updateResizeIndicator();
+
     CustomTile *leaf = currentLeaf();
 
     if (m_splitIndicatorLeaf != leaf) {
@@ -513,6 +599,87 @@ void Ki3Tiler::updateSplitIndicator()
         : RectF(geom.left(), geom.bottom() - thickness, geom.width(), thickness);
     m_splitIndicatorWindow->setGeometry(strip.toRect());
     m_splitIndicatorWindow->show();
+}
+
+void Ki3Tiler::updateResizeIndicator()
+{
+    CustomTile *leaf = m_resizeMode ? currentLeaf() : nullptr;
+
+    if (m_resizeIndicatorLeaf != leaf) {
+        if (m_resizeIndicatorLeaf) {
+            disconnect(m_resizeIndicatorLeaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::updateResizeIndicator);
+        }
+        m_resizeIndicatorLeaf = leaf;
+        if (leaf) {
+            connect(leaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::updateResizeIndicator);
+        }
+    }
+
+    // Same visibility rule as the split indicator: only a leaf with a
+    // presently-shown window on the current desktop has anything to outline.
+    Window *window = (leaf && leaf->childCount() == 0 && !leaf->windows().isEmpty())
+        ? leaf->windows().constFirst()
+        : nullptr;
+    if (!window || !window->isShown() || !window->isOnCurrentDesktop()) {
+        for (auto &strip : m_resizeBorder) {
+            strip->hide();
+        }
+        return;
+    }
+
+    static constexpr qreal thickness = 4.0;
+    const RectF geom = leaf->windowGeometry();
+    // Order matches m_resizeBorder's doc comment: top, bottom, left, right.
+    const RectF strips[4] = {
+        RectF(geom.left(), geom.top(), geom.width(), thickness),
+        RectF(geom.left(), geom.bottom() - thickness, geom.width(), thickness),
+        RectF(geom.left(), geom.top(), thickness, geom.height()),
+        RectF(geom.right() - thickness, geom.top(), thickness, geom.height()),
+    };
+    for (int i = 0; i < 4; ++i) {
+        m_resizeBorder[i]->setGeometry(strips[i].toRect());
+        m_resizeBorder[i]->show();
+    }
+}
+
+void Ki3Tiler::toggleResizeMode()
+{
+    setResizeMode(!m_resizeMode);
+}
+
+void Ki3Tiler::setResizeMode(bool active)
+{
+    if (m_resizeMode == active) {
+        return;
+    }
+    m_resizeMode = active;
+    qCInfo(KWIN_KI3) << "resize mode ->" << (m_resizeMode ? "on" : "off");
+
+    // (Un)bind the bare-key resize/exit shortcuts -- see
+    // registerResizeModeShortcuts() -- to approximate i3/sway's keyboard grab:
+    // only while active do bare h/j/k/l/arrows/Escape/Return do anything.
+    for (const ResizeModeShortcut &shortcut : m_resizeModeActions) {
+        if (active) {
+            for (const QKeySequence &key : shortcut.keys) {
+                KGlobalAccel::stealShortcutSystemwide(key);
+            }
+        }
+        KGlobalAccel::self()->setShortcut(shortcut.action, active ? shortcut.keys : QList<QKeySequence>{},
+                                          KGlobalAccel::NoAutoloading);
+    }
+
+    updateResizeIndicator();
+    Q_EMIT resizeModeChanged();
+}
+
+bool Ki3Tiler::resizeModeActive() const
+{
+    return m_resizeMode;
+}
+
+void Ki3Tiler::handleDirectional(Qt::Edge edge)
+{
+    moveFocus(edge);
 }
 
 void Ki3Tiler::moveFocus(Qt::Edge edge)

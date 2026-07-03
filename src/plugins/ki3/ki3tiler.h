@@ -16,6 +16,7 @@
 #include <QSet>
 #include <QStringList>
 
+#include <array>
 #include <memory>
 
 namespace KWin
@@ -64,9 +65,15 @@ public Q_SLOTS:
     /** D-Bus wrapper for moveActiveToWorkspace(), for the ki3-pager plasmoid. */
     Q_SCRIPTABLE void dbusMoveActiveToWorkspace(int number);
 
+    /** Whether Meta+R resize mode (see toggleResizeMode()) is currently active. */
+    Q_SCRIPTABLE bool resizeModeActive() const;
+
 Q_SIGNALS:
     /** Emitted whenever any output's current desktop changes. */
     Q_SCRIPTABLE void desktopsChanged();
+
+    /** Emitted whenever resize mode is toggled on or off. */
+    Q_SCRIPTABLE void resizeModeChanged();
 
 private:
     void handleWindowAdded(Window *window);
@@ -75,6 +82,17 @@ private:
 
     /** Register global shortcuts. */
     void registerShortcuts();
+
+    /**
+     * Register the bare (no-modifier) h/j/k/l, arrow, and Escape/Return
+     * shortcuts used *only* while resize mode is active (see setResizeMode()).
+     * Created once with no bound keys — KGlobalAccel would otherwise grab e.g.
+     * plain "h" globally forever, breaking normal typing everywhere. Their
+     * QKeySequences are (re)applied/cleared by setResizeMode() itself, which
+     * is the closest approximation available to i3/sway's real keyboard grab
+     * without KWin plugins having access to one.
+     */
+    void registerResizeModeShortcuts();
 
     /**
      * i3/sway container layouts beyond plain splits. A tab/stack "container" is
@@ -149,6 +167,17 @@ private:
      */
     void updateSplitIndicator();
 
+    /**
+     * Refresh the on-screen border drawn around the resize-mode target: four
+     * thin strips around currentLeaf()'s window while m_resizeMode is active,
+     * hidden otherwise. Called from updateSplitIndicator() so it stays in sync
+     * with every event that can change the current leaf or its geometry
+     * without duplicating that call site's bookkeeping; also re-tracks
+     * currentLeaf()'s windowGeometryChanged the same way updateSplitIndicator()
+     * does, so the border follows the leaf through a resize.
+     */
+    void updateResizeIndicator();
+
     /** Move keyboard focus to the neighbouring leaf in @p edge direction. */
     void moveFocus(Qt::Edge edge);
 
@@ -160,6 +189,30 @@ private:
 
     /** Grow/shrink the active leaf along @p orientation by @p deltaPixels. */
     void resizeActive(Qt::Orientation orientation, qreal deltaPixels);
+
+    /**
+     * Toggle resize mode (i3/sway "mode resize", `Meta+R`): while active, bare
+     * h/j/k/l/arrow keys (no modifier) resize the focused leaf, Escape/Return
+     * leave the mode, and every other ki3 shortcut is inert — matching i3/sway,
+     * where entering resize mode grabs the keyboard so nothing else fires until
+     * the mode is explicitly left. Press `Meta+R` again (always live, see
+     * registerShortcuts()) to leave the mode from outside it too.
+     */
+    void toggleResizeMode();
+
+    /**
+     * Enter/leave resize mode; shared by toggleResizeMode(), the bare Escape/
+     * Return exit shortcuts (see registerResizeModeShortcuts()), and the
+     * auto-exit in handleWindowRemoved() (closing the last window leaves
+     * nothing to resize). No-op if @p active already matches the current
+     * state, so the auto-exit doesn't spam the log/D-Bus signal on every
+     * window close. Binds/unbinds the bare-key resize shortcuts to approximate
+     * i3/sway's keyboard grab — see registerResizeModeShortcuts().
+     */
+    void setResizeMode(bool active);
+
+    /** Move keyboard focus in @p edge direction (bound to Meta+h/j/k/l/arrows). */
+    void handleDirectional(Qt::Edge edge);
 
     /**
      * Set the split direction applied to the next inserted window (i3/sway
@@ -324,6 +377,9 @@ private:
     // Default split direction for new windows (i3 default: side-by-side).
     Tile::LayoutDirection m_splitDirection = Tile::LayoutDirection::Horizontal;
 
+    // Whether Meta+R resize mode is active; see toggleResizeMode().
+    bool m_resizeMode = false;
+
     // Authoritative mapping of the windows we manage to their leaf tile.
     QHash<Window *, QPointer<CustomTile>> m_leafForWindow;
 
@@ -366,6 +422,25 @@ private:
     // geometry updates), so updateSplitIndicator() can (re)subscribe only
     // when it actually changes.
     QPointer<CustomTile> m_splitIndicatorLeaf;
+
+    // Border drawn around the resize-mode target (see updateResizeIndicator()):
+    // top, bottom, left, right strips, same Ki3SolidOverlay mechanism as
+    // m_splitIndicatorWindow above.
+    std::array<std::unique_ptr<Ki3SolidOverlay>, 4> m_resizeBorder;
+
+    // The leaf m_resizeBorder is currently tracking; see m_splitIndicatorLeaf.
+    QPointer<CustomTile> m_resizeIndicatorLeaf;
+
+    // One resize-mode-only shortcut (see registerResizeModeShortcuts()): the
+    // action to trigger, and the keys setResizeMode() binds it to on entry /
+    // clears on exit. Kept as data (not just QActions) since KGlobalAccel's
+    // setShortcut() needs the key list re-supplied on every rebind.
+    struct ResizeModeShortcut
+    {
+        QAction *action;
+        QList<QKeySequence> keys;
+    };
+    QList<ResizeModeShortcut> m_resizeModeActions;
 };
 
 } // namespace KWin
