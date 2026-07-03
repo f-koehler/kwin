@@ -95,6 +95,15 @@ private:
     void registerResizeModeShortcuts();
 
     /**
+     * Disable the Overview effect's default top-left screen-edge trigger.
+     * It fires where ki3's own split/resize indicators and stacked/tabbed
+     * title bars live, is easy to hit by accident while tiling, and its
+     * default Meta+W shortcut is taken over for the tabbed layout in
+     * registerShortcuts() anyway.
+     */
+    void disableOverviewHotCorner();
+
+    /**
      * i3/sway container layouts beyond plain splits. A tab/stack "container" is
      * represented as a *single leaf tile owning several windows* (KWin gives
      * every window in a tile the same rect — tile.cpp:141-143 — i.e. they

@@ -20,8 +20,12 @@
 #include "window.h"
 #include "workspace.h"
 
+#include <KConfigGroup>
 #include <KGlobalAccel>
 #include <KLocalizedString>
+#include <KSharedConfig>
+
+#include <kwineffects_interface.h>
 
 #include <QAction>
 #include <QDBusConnection>
@@ -71,6 +75,7 @@ Ki3Tiler::Ki3Tiler()
 
     registerShortcuts();
     registerResizeModeShortcuts();
+    disableOverviewHotCorner();
 
     // Adopt any windows that already exist when the plugin loads.
     for (Window *window : ws->windows()) {
@@ -370,6 +375,23 @@ void Ki3Tiler::registerResizeModeShortcuts()
         [this]() {
         setResizeMode(false);
     });
+}
+
+void Ki3Tiler::disableOverviewHotCorner()
+{
+    KSharedConfigPtr kwinConfig = KSharedConfig::openConfig(QStringLiteral("kwinrc"));
+    KConfigGroup group = kwinConfig->group(QStringLiteral("Effect-overview"));
+    if (group.readEntry("BorderActivate", QList<int>{}).isEmpty()
+        && group.hasKey("BorderActivate")) {
+        return;
+    }
+    group.writeEntry("BorderActivate", QList<int>{});
+    group.sync();
+
+    OrgKdeKwinEffectsInterface interface(QStringLiteral("org.kde.KWin"),
+                                         QStringLiteral("/Effects"),
+                                         QDBusConnection::sessionBus());
+    interface.reconfigureEffect(QStringLiteral("overview"));
 }
 
 Ki3Tiler::~Ki3Tiler() = default;
