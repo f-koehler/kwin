@@ -566,13 +566,27 @@ void Ki3Tiler::handleWindowRemoved(Window *window)
 
 CustomTile *Ki3Tiler::currentLeaf() const
 {
-    if (Window *active = workspace()->activeWindow(); active != nullptr) {
+    // Every shortcut-driven action (move/focus/resize/container-mode) resolves
+    // its target through here, so this is where "act on the current desktop
+    // only" is enforced. Switching to an empty desktop leaves KWin's active
+    // window -- and m_lastFocusedLeaf -- pointing at whatever was focused on the
+    // *previous* desktop; returning that here would let a shortcut mutate the
+    // layout on a desktop the user isn't even looking at. Tile::isActive() is
+    // true only for the desktop currently shown on the leaf's output (so this
+    // stays correct with per-output virtual desktops), and it matches the
+    // isOnCurrentDesktop() visibility guard the split/focus/resize indicators
+    // already apply.
+    if (Window *active = workspace()->activeWindow();
+        active != nullptr && active->isOnCurrentDesktop()) {
         const auto it = m_leafForWindow.constFind(active);
         if (it != m_leafForWindow.constEnd() && it.value()) {
             return it.value();
         }
     }
-    return m_lastFocusedLeaf;
+    if (m_lastFocusedLeaf && m_lastFocusedLeaf->isActive()) {
+        return m_lastFocusedLeaf;
+    }
+    return nullptr;
 }
 
 void Ki3Tiler::applyIndicatorColors()
