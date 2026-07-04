@@ -182,6 +182,16 @@ private:
     /** Slot: a group tile's geometry changed — reposition its header. */
     void onGroupGeometryChanged();
 
+    /**
+     * Slot: a group's container tile was destroyed out from under us (e.g. an
+     * output was unplugged, taking its whole TileManager/tile tree with it).
+     * m_tabbed is keyed by raw CustomTile* (unlike the QPointer-guarded
+     * m_leafForWindow), so without this its entry would dangle and the next
+     * refreshAllGroups() would dereference freed memory. @p tile is only used
+     * as a hash key here (never dereferenced), so it is safe mid-destruction.
+     */
+    void onGroupTileDestroyed(QObject *tile);
+
     /** Activate the tab at @p index within @p tile (from a header click). */
     void activateTab(CustomTile *tile, int index);
 
