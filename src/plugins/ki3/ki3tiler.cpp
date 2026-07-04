@@ -46,19 +46,22 @@ Ki3Tiler::Ki3Tiler()
 
     m_nonTileableRules = loadNonTileableRules();
 
-    // Match ki3-pager's active-desktop accent: the colour scheme's selection
-    // background, i.e. the same value Kirigami exposes as Theme.highlightColor.
-    m_splitIndicatorWindow->setColor(
-        KColorScheme(QPalette::Active, KColorScheme::Selection)
-            .background(KColorScheme::NormalBackground)
-            .color());
-
-    // Amber, distinct from the split indicator's red, matching the "neutral
-    // warning" colour ki3-pager uses for its own resize-mode indication.
     for (auto &strip : m_resizeBorder) {
         strip = std::make_unique<Ki3SolidOverlay>();
-        strip->setColor(QColor(0xff, 0xa5, 0x00));
     }
+
+    // Colour both overlays from the active colour scheme now, and re-read them
+    // whenever the user switches scheme (kdeglobals changes) so the accents stay
+    // in step with ki3-pager's Kirigami colours instead of freezing at load.
+    applyIndicatorColors();
+    m_colorSchemeWatcher = KConfigWatcher::create(KSharedConfig::openConfig());
+    connect(m_colorSchemeWatcher.get(), &KConfigWatcher::configChanged, this,
+            [this](const KConfigGroup &group, const QByteArrayList &) {
+        if (group.name().startsWith(QLatin1String("Colors:"))
+            || group.name() == QLatin1String("General")) {
+            applyIndicatorColors();
+        }
+    });
 
     Workspace *ws = Workspace::self();
     connect(ws, &Workspace::windowAdded, this, &Ki3Tiler::handleWindowAdded);
@@ -542,6 +545,27 @@ CustomTile *Ki3Tiler::currentLeaf() const
         }
     }
     return m_lastFocusedLeaf;
+}
+
+void Ki3Tiler::applyIndicatorColors()
+{
+    // Split indicator: the scheme's selection background — the same value
+    // Kirigami exposes as Theme.highlightColor, which ki3-pager uses for the
+    // current/active desktop cell.
+    m_splitIndicatorWindow->setColor(
+        KColorScheme(QPalette::Active, KColorScheme::Selection)
+            .background(KColorScheme::NormalBackground)
+            .color());
+
+    // Resize border: the scheme's neutral ("warning") foreground — Kirigami's
+    // Theme.neutralTextColor, which ki3-pager switches to while resize mode is
+    // active, and distinct from the split indicator's selection accent.
+    const QColor resizeColor = KColorScheme(QPalette::Active, KColorScheme::View)
+                                   .foreground(KColorScheme::NeutralText)
+                                   .color();
+    for (auto &strip : m_resizeBorder) {
+        strip->setColor(resizeColor);
+    }
 }
 
 void Ki3Tiler::updateSplitIndicator()

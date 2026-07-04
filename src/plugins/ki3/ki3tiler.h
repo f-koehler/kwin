@@ -10,6 +10,8 @@
 #include "plugin.h"
 #include "tiles/tile.h"
 
+#include <KConfigWatcher>
+
 #include <QHash>
 #include <QList>
 #include <QPointer>
@@ -215,6 +217,16 @@ private:
      * does, so the border follows the leaf through a resize.
      */
     void updateResizeIndicator();
+
+    /**
+     * (Re)apply the colour-scheme-derived colours to the overlay windows: the
+     * split indicator uses the scheme's selection background (Kirigami's
+     * Theme.highlightColor, matching ki3-pager's active-desktop accent) and the
+     * resize border its neutral/negative accent. Called at construction and
+     * whenever kdeglobals changes (see m_colorSchemeWatcher) so both track a
+     * live colour-scheme switch the way ki3-pager's Kirigami colours do.
+     */
+    void applyIndicatorColors();
 
     /** Move keyboard focus to the neighbouring leaf in @p edge direction. */
     void moveFocus(Qt::Edge edge);
@@ -490,6 +502,11 @@ private:
 
     // The leaf m_resizeBorder is currently tracking; see m_splitIndicatorLeaf.
     QPointer<CustomTile> m_resizeIndicatorLeaf;
+
+    // Watches kdeglobals so applyIndicatorColors() re-reads the scheme when the
+    // user switches colour scheme, keeping the overlays' accents live (matching
+    // ki3-pager's Kirigami colours) instead of frozen at plugin-load time.
+    KConfigWatcher::Ptr m_colorSchemeWatcher;
 
     // One resize-mode-only shortcut (see registerResizeModeShortcuts()): the
     // action to trigger, and the keys setResizeMode() binds it to on entry /
