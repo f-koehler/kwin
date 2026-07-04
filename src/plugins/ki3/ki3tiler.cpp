@@ -1045,9 +1045,10 @@ void Ki3Tiler::untabContainer(CustomTile *tile)
     const Tile::LayoutDirection prevSplit = it->prevSplit;
     destroyGroupHeader(tile); // drop the header + clear the tile's header reserve
     m_tabbed.erase(it);
-    for (Window *w : windows) {
-        w->setNoBorder(false); // restore each window's own title bar
-    }
+    // Windows here stay in the tile tree (as the lone leaf, or re-inserted
+    // below into a split) — since default/split layouts hide title bars too
+    // (see ki3-PLAN.md 2026-07-04), they must stay borderless, not regain
+    // their native SSD title bar.
     if (windows.size() < 2) {
         return; // a lone (or empty) group is already a plain leaf
     }
