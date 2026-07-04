@@ -20,6 +20,7 @@
 #include "window.h"
 #include "workspace.h"
 
+#include <KColorScheme>
 #include <KConfigGroup>
 #include <KGlobalAccel>
 #include <KLocalizedString>
@@ -45,9 +46,12 @@ Ki3Tiler::Ki3Tiler()
 
     m_nonTileableRules = loadNonTileableRules();
 
-    // TODO: deliberately garish for now, to confirm the indicator is visible
-    // at all; swap for a subtler accent colour once that's confirmed.
-    m_splitIndicatorWindow->setColor(QColor(255, 0, 0));
+    // Match ki3-pager's active-desktop accent: the colour scheme's selection
+    // background, i.e. the same value Kirigami exposes as Theme.highlightColor.
+    m_splitIndicatorWindow->setColor(
+        KColorScheme(QPalette::Active, KColorScheme::Selection)
+            .background(KColorScheme::NormalBackground)
+            .color());
 
     // Amber, distinct from the split indicator's red, matching the "neutral
     // warning" colour ki3-pager uses for its own resize-mode indication.
