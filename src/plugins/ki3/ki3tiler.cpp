@@ -1142,13 +1142,15 @@ void Ki3Tiler::updateTabVisibility(CustomTile *tile)
 void Ki3Tiler::refreshGroup(CustomTile *tile)
 {
     // setHeaderReserve() below emits windowGeometryChanged, which we listen to;
-    // ignore that re-entry — the outer call finishes against settled geometry.
-    if (m_refreshingGroup) {
+    // ignore that re-entry *for this tile* — the outer call finishes against
+    // settled geometry. A refresh of a different group nested in the cascade is
+    // still allowed to proceed.
+    if (m_refreshingGroups.contains(tile)) {
         return;
     }
-    m_refreshingGroup = true;
-    auto guard = qScopeGuard([this] {
-        m_refreshingGroup = false;
+    m_refreshingGroups.insert(tile);
+    auto guard = qScopeGuard([this, tile] {
+        m_refreshingGroups.remove(tile);
     });
 
     // Prune dead windows, raise the active tab (shared T0 logic). May erase the

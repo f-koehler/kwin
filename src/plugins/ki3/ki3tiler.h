@@ -455,9 +455,11 @@ private:
     QHash<CustomTile *, TabState> m_tabbed;
 
     // Guards refreshGroup() against the re-entry triggered when setHeaderReserve
-    // emits windowGeometryChanged (which we listen to). The re-entrant call is a
-    // no-op; the outer call finishes positioning against the settled geometry.
-    bool m_refreshingGroup = false;
+    // emits windowGeometryChanged (which we listen to). Keyed per tile so a
+    // cascade that refreshes a *different* group mid-call still runs; only the
+    // re-entry for the same tile is suppressed (that outer call finishes
+    // positioning against the settled geometry).
+    QSet<CustomTile *> m_refreshingGroups;
 
     // Rules (built-in + user config) for windows ki3 must never tile.
     QList<WindowRule> m_nonTileableRules;
