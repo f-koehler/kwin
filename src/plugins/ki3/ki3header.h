@@ -15,9 +15,10 @@ namespace KWin
 
 /**
  * A plain solid-colour internal overlay window (used for the split-direction
- * indicator). A QRasterWindow rather than a QQuickWindow so it renders through
- * KWin's internal QPA backing store with no OpenGL/Qt-Quick RHI — the Quick
- * path crashes on the headless virtual backend (no GL context). Tagged
+ * indicator and, with @p acceptsInput, the floating-window resize strips). A
+ * QRasterWindow rather than a QQuickWindow so it renders through KWin's
+ * internal QPA backing store with no OpenGL/Qt-Quick RHI — the Quick path
+ * crashes on the headless virtual backend (no GL context). Tagged
  * `__ki3_overlay` so Window::belongsToLayer() puts it in AboveLayer (above
  * ordinary windows, below menus/notifications).
  */
@@ -26,14 +27,57 @@ class Ki3SolidOverlay : public QRasterWindow
     Q_OBJECT
 
 public:
-    explicit Ki3SolidOverlay();
+    /**
+     * @p acceptsInput: pure visual overlays (split/resize-mode indicators)
+     * stay input-transparent (the default); floating-window resize strips
+     * pass @c true to receive mouse presses instead.
+     */
+    explicit Ki3SolidOverlay(bool acceptsInput = false);
     void setColor(const QColor &color);
+
+Q_SIGNALS:
+    /** Only emitted when constructed with acceptsInput == true. */
+    void pressed(const QPointF &globalPos);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
 
 private:
     QColor m_color;
+    bool m_acceptsInput;
+};
+
+/**
+ * The single-window title bar ki3 draws for a floating window in place of its
+ * native SSD (see toggleFloating()/createFloatChrome()). Same painting style
+ * as Ki3Header but always one row, no tabs. Dragging it moves the window
+ * (via Window::performMousePressCommand(Options::MouseMove, ...) — dragRequested
+ * just forwards the press's global position for the caller to feed in).
+ */
+class Ki3FloatTitleBar : public QRasterWindow
+{
+    Q_OBJECT
+
+public:
+    explicit Ki3FloatTitleBar();
+
+    /** Height of the title row, in logical pixels. */
+    static qreal barHeight();
+
+    /** Update the drawn title and repaint. */
+    void setTitle(const QString &title);
+
+Q_SIGNALS:
+    /** The bar was pressed; @p globalPos is where, in global coordinates. */
+    void dragRequested(const QPointF &globalPos);
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+
+private:
+    QString m_title;
 };
 
 /**

@@ -23,6 +23,7 @@ namespace KWin
 {
 
 class CustomTile;
+class Ki3FloatTitleBar;
 class Ki3Header;
 class Ki3SolidOverlay;
 class LogicalOutput;
@@ -124,6 +125,24 @@ private:
         // untab (i3/sway prev_split_layout).
         Tile::LayoutDirection prevSplit = Tile::LayoutDirection::Horizontal;
         std::shared_ptr<Ki3Header> header; // the title bar (created lazily)
+    };
+
+    /**
+     * ki3's own chrome for a floating window, replacing its native SSD: a
+     * title bar above it (drag to move) and thin resize strips along its
+     * left/right/bottom edges (drag to resize). See createFloatChrome().
+     */
+    struct FloatChrome
+    {
+        std::shared_ptr<Ki3FloatTitleBar> titleBar;
+        // Left, right, bottom (top is covered by the title bar itself).
+        std::array<std::shared_ptr<Ki3SolidOverlay>, 3> resizeStrips;
+        // The window's geometry/caption connections driving repositionFloatChrome();
+        // stored so destroyFloatChrome() can disconnect the exact lambda connections
+        // (Qt::UniqueConnection can't dedupe lambdas, so we guard by construction
+        // instead and just need precise teardown here).
+        QMetaObject::Connection geometryConn;
+        QMetaObject::Connection captionConn;
     };
 
     /** The leaf tile of the currently active or last focused window. */
@@ -353,6 +372,21 @@ private:
     /** Detach a window and collapse the tile it leaves behind. */
     void forgetWindow(Window *window);
 
+    /**
+     * Build (or, if already present, just leave alone) the floating chrome
+     * for @p window: reflows its geometry to carve out title-bar space, then
+     * creates the title bar + resize strips, wires their input signals to
+     * Window::performMousePressCommand(), and hooks its geometry/caption
+     * changes to keep the chrome in sync.
+     */
+    void createFloatChrome(Window *window);
+
+    /** Tear down @p window's floating chrome (un-float or window destroy). */
+    void destroyFloatChrome(Window *window);
+
+    /** Reposition and repaint @p window's floating chrome to match its current geometry/title. */
+    void repositionFloatChrome(Window *window);
+
     /** Root tile for the window's output and (current) desktop, or nullptr. */
     RootTile *rootForWindow(Window *window) const;
 
@@ -400,6 +434,11 @@ private:
 
     // Windows the user has detached from tiling (floating).
     QSet<Window *> m_floatingWindows;
+
+    // ki3's own title bar + resize strips for each floating window (replacing
+    // its native SSD). Entries created in createFloatChrome(), torn down in
+    // destroyFloatChrome(); keyed by the same windows as m_floatingWindows.
+    QHash<Window *, FloatChrome> m_floatChrome;
 
     // Leaf tiles that are tab/stack groups (own several windows, one visible).
     // Keyed by the group leaf; entries are dropped when the group empties.
