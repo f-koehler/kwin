@@ -39,6 +39,31 @@
 namespace KWin
 {
 
+// Shared thickness (device-independent px) of every leaf-edge overlay: the
+// split-direction hint, the resize-mode border, and the focused-window border.
+// Kept in one place so they stay visually consistent.
+static constexpr qreal kIndicatorThickness = 3.0;
+
+// Linear-RGB blend of @p a and @p b, @p t of the way from a to b.
+static QColor mixColors(const QColor &a, const QColor &b, qreal t)
+{
+    return QColor::fromRgbF(a.redF() + (b.redF() - a.redF()) * t,
+                            a.greenF() + (b.greenF() - a.greenF()) * t,
+                            a.blueF() + (b.blueF() - a.blueF()) * t);
+}
+
+// The four kIndicatorThickness-wide edge strips outlining @p geom, in the order
+// the resize/focus border arrays expect: top, bottom, left, right.
+static std::array<RectF, 4> borderStrips(const RectF &geom)
+{
+    return {
+        RectF(geom.left(), geom.top(), geom.width(), kIndicatorThickness),
+        RectF(geom.left(), geom.bottom() - kIndicatorThickness, geom.width(), kIndicatorThickness),
+        RectF(geom.left(), geom.top(), kIndicatorThickness, geom.height()),
+        RectF(geom.right() - kIndicatorThickness, geom.top(), kIndicatorThickness, geom.height()),
+    };
+}
+
 Ki3Tiler::Ki3Tiler()
     : m_splitIndicatorWindow(std::make_unique<Ki3SolidOverlay>())
 {
@@ -47,6 +72,9 @@ Ki3Tiler::Ki3Tiler()
     m_nonTileableRules = loadNonTileableRules();
 
     for (auto &strip : m_resizeBorder) {
+        strip = std::make_unique<Ki3SolidOverlay>();
+    }
+    for (auto &strip : m_focusBorder) {
         strip = std::make_unique<Ki3SolidOverlay>();
     }
 
@@ -552,10 +580,10 @@ void Ki3Tiler::applyIndicatorColors()
     // Split indicator: the scheme's selection background — the same value
     // Kirigami exposes as Theme.highlightColor, which ki3-pager uses for the
     // current/active desktop cell.
-    m_splitIndicatorWindow->setColor(
-        KColorScheme(QPalette::Active, KColorScheme::Selection)
-            .background(KColorScheme::NormalBackground)
-            .color());
+    const QColor highlight = KColorScheme(QPalette::Active, KColorScheme::Selection)
+                                 .background(KColorScheme::NormalBackground)
+                                 .color();
+    m_splitIndicatorWindow->setColor(highlight);
 
     // Resize border: the scheme's neutral ("warning") foreground — Kirigami's
     // Theme.neutralTextColor, which ki3-pager switches to while resize mode is
@@ -566,14 +594,32 @@ void Ki3Tiler::applyIndicatorColors()
     for (auto &strip : m_resizeBorder) {
         strip->setColor(resizeColor);
     }
+
+    // Focus border: a dimmed sibling of the split indicator's highlight, mixed
+    // halfway toward the window background so it stays clearly distinct from the
+    // full-strength highlight the split strip draws on top of it (the scheme's
+    // FocusColor role can equal the selection colour, hiding the split strip).
+    const QColor windowBg = KColorScheme(QPalette::Active, KColorScheme::View)
+                                .background(KColorScheme::NormalBackground)
+                                .color();
+    const QColor focusColor = mixColors(highlight, windowBg, 0.5);
+    for (auto &strip : m_focusBorder) {
+        strip->setColor(focusColor);
+    }
 }
 
 void Ki3Tiler::updateSplitIndicator()
 {
     // Refreshed unconditionally (not just when the split indicator itself has
-    // something to show below) so it also runs -- and hides the border -- when
+    // something to show below) so it also runs -- and hides the borders -- when
     // the current leaf disappears, e.g. the last window on a desktop closing
     // while resize mode is active.
+    //
+    // Order matters for stacking: the focus border must be (re)shown *before* the
+    // resize border and the split indicator so those two internal windows are
+    // created after it and therefore stack above it in AboveLayer (see
+    // updateFocusIndicator()).
+    updateFocusIndicator();
     updateResizeIndicator();
 
     CustomTile *leaf = currentLeaf();
@@ -600,11 +646,10 @@ void Ki3Tiler::updateSplitIndicator()
         return;
     }
 
-    static constexpr qreal thickness = 4.0;
     const RectF geom = leaf->windowGeometry();
     const RectF strip = (m_splitDirection == Tile::LayoutDirection::Horizontal)
-        ? RectF(geom.right() - thickness, geom.top(), thickness, geom.height())
-        : RectF(geom.left(), geom.bottom() - thickness, geom.width(), thickness);
+        ? RectF(geom.right() - kIndicatorThickness, geom.top(), kIndicatorThickness, geom.height())
+        : RectF(geom.left(), geom.bottom() - kIndicatorThickness, geom.width(), kIndicatorThickness);
     m_splitIndicatorWindow->setGeometry(strip.toRect());
     m_splitIndicatorWindow->show();
 }
@@ -635,18 +680,43 @@ void Ki3Tiler::updateResizeIndicator()
         return;
     }
 
-    static constexpr qreal thickness = 4.0;
-    const RectF geom = leaf->windowGeometry();
-    // Order matches m_resizeBorder's doc comment: top, bottom, left, right.
-    const RectF strips[4] = {
-        RectF(geom.left(), geom.top(), geom.width(), thickness),
-        RectF(geom.left(), geom.bottom() - thickness, geom.width(), thickness),
-        RectF(geom.left(), geom.top(), thickness, geom.height()),
-        RectF(geom.right() - thickness, geom.top(), thickness, geom.height()),
-    };
+    const auto strips = borderStrips(leaf->windowGeometry());
     for (int i = 0; i < 4; ++i) {
         m_resizeBorder[i]->setGeometry(strips[i].toRect());
         m_resizeBorder[i]->show();
+    }
+}
+
+void Ki3Tiler::updateFocusIndicator()
+{
+    CustomTile *leaf = currentLeaf();
+
+    if (m_focusIndicatorLeaf != leaf) {
+        if (m_focusIndicatorLeaf) {
+            disconnect(m_focusIndicatorLeaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::updateFocusIndicator);
+        }
+        m_focusIndicatorLeaf = leaf;
+        if (leaf) {
+            connect(leaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::updateFocusIndicator);
+        }
+    }
+
+    // Same visibility rule as the split/resize indicators: only a leaf with a
+    // presently-shown window on the current desktop has anything to outline.
+    Window *window = (leaf && leaf->childCount() == 0 && !leaf->windows().isEmpty())
+        ? leaf->windows().constFirst()
+        : nullptr;
+    if (!window || !window->isShown() || !window->isOnCurrentDesktop()) {
+        for (auto &strip : m_focusBorder) {
+            strip->hide();
+        }
+        return;
+    }
+
+    const auto strips = borderStrips(leaf->windowGeometry());
+    for (int i = 0; i < 4; ++i) {
+        m_focusBorder[i]->setGeometry(strips[i].toRect());
+        m_focusBorder[i]->show();
     }
 }
 

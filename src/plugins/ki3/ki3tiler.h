@@ -219,6 +219,18 @@ private:
     void updateResizeIndicator();
 
     /**
+     * Refresh the muted border drawn around the currently focused leaf's window:
+     * four thin strips, same mechanism and geometry as updateResizeIndicator()
+     * but shown whenever there is a focused leaf (not only in resize mode) and in
+     * a subtler colour. Deliberately shown *before* the split/resize indicators
+     * each cycle (see updateSplitIndicator()) so those draw on top of it — ki3's
+     * overlays share KWin's AboveLayer, where the most-recently-shown internal
+     * window stacks highest (its InternalWindow is (re)created on show; see
+     * qpa/window.cpp map()/unmap()).
+     */
+    void updateFocusIndicator();
+
+    /**
      * (Re)apply the colour-scheme-derived colours to the overlay windows: the
      * split indicator uses the scheme's selection background (Kirigami's
      * Theme.highlightColor, matching ki3-pager's active-desktop accent) and the
@@ -502,6 +514,15 @@ private:
 
     // The leaf m_resizeBorder is currently tracking; see m_splitIndicatorLeaf.
     QPointer<CustomTile> m_resizeIndicatorLeaf;
+
+    // Muted border around the currently focused leaf's window: top, bottom,
+    // left, right strips, same Ki3SolidOverlay mechanism as m_resizeBorder, but
+    // always shown for the focused window and kept below the split/resize
+    // indicators (see updateFocusIndicator()).
+    std::array<std::unique_ptr<Ki3SolidOverlay>, 4> m_focusBorder;
+
+    // The leaf m_focusBorder is currently tracking; see m_splitIndicatorLeaf.
+    QPointer<CustomTile> m_focusIndicatorLeaf;
 
     // Watches kdeglobals so applyIndicatorColors() re-reads the scheme when the
     // user switches colour scheme, keeping the overlays' accents live (matching
