@@ -1401,9 +1401,21 @@ void Ki3Tiler::assignInitialDesktops()
     const auto outputs = workspace()->outputs();
     const int nOutputs = std::max(1, int(outputs.size()));
 
-    // Collapse to exactly nOutputs desktops so we start from a known state, then
-    // rename them "1".."nOutputs" and assign one per output.
-    vdm->setCount(uint(nOutputs));
+    // Target one numbered desktop per output. setCount() removes desktops from
+    // the end, so shrinking straight to nOutputs would destroy higher-numbered
+    // desktops and re-home their windows — harmless on a fresh boot (a single
+    // default desktop) but destructive on a plugin reload into a populated
+    // session. Never shrink past an occupied desktop: keep at least up to the
+    // highest one currently holding a window (pruneEmptyDesktops() clears any
+    // leftover empties afterwards anyway).
+    const auto existing = vdm->desktops();
+    int required = nOutputs;
+    for (int i = 0; i < existing.size(); ++i) {
+        if (outputForDesktop(existing[i])) {
+            required = std::max(required, i + 1);
+        }
+    }
+    vdm->setCount(uint(required));
     const auto desktops = vdm->desktops();
     for (int i = 0; i < nOutputs; ++i) {
         desktops[i]->setName(QString::number(i + 1));
