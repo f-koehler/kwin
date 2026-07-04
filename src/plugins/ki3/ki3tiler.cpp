@@ -770,22 +770,35 @@ void Ki3Tiler::moveWindow(Qt::Edge edge)
     if (!leaf || leaf->windows().isEmpty()) {
         return;
     }
-    // Moving a tab/stack group's window would pull an arbitrary member out and
-    // desync TabState. Moving windows into/out of a group is a full reparent
-    // (deferred); skip for now rather than corrupt the group.
-    if (m_tabbed.contains(leaf)) {
-        qCDebug(KWIN_KI3) << "move: within/out of a tab group not supported yet";
+
+    // The window we relocate. Inside a tab/stack group all members share the
+    // tile, so windows().constFirst() need not be the focused one — move the
+    // *active tab* out instead. A plain leaf owns a single window.
+    auto srcGroup = m_tabbed.find(leaf);
+    const bool fromGroup = (srcGroup != m_tabbed.end());
+    Window *self = nullptr;
+    if (fromGroup) {
+        if (srcGroup->windows.isEmpty()) {
+            return;
+        }
+        const int idx = std::clamp(srcGroup->active, 0, int(srcGroup->windows.size()) - 1);
+        self = srcGroup->windows[idx];
+    } else {
+        self = leaf->windows().constFirst();
+    }
+    if (!self) {
         return;
     }
+
+    // The neighbouring leaf in `edge` direction. A group is a single leaf, so
+    // this neighbour is always *outside* the group — moving a tab in any
+    // direction pops it out toward that neighbour (intra-group tab reordering
+    // is a separate follow-up). If the neighbour is itself a group,
+    // placeWindowAt joins it as a new tab (group-to-group move).
     CustomTile *target = leaf->nextNonLayoutTileAt(edge);
     if (!target || target->windows().isEmpty()) {
         return;
     }
-    if (m_tabbed.contains(target)) {
-        qCDebug(KWIN_KI3) << "move: into a tab group not supported yet";
-        return;
-    }
-    Window *self = leaf->windows().constFirst();
     if (self == target->windows().constFirst()) {
         return;
     }
@@ -812,6 +825,21 @@ void Ki3Tiler::moveWindow(Qt::Edge edge)
     CustomTile *parent = static_cast<CustomTile *>(leaf->parentTile());
     auto *root = static_cast<RootTile *>(leaf->rootTile());
 
+    // Moving out of a group: drop `self` from the group's TabState up front so
+    // our bookkeeping stays consistent once placeWindowAt re-homes the window.
+    // The tile keeps the surviving tabs (refreshed below), or empties out and
+    // is collapsed with every other vacated leaf. srcGroup is not reused after
+    // the erase.
+    if (fromGroup) {
+        srcGroup->windows.removeAll(self);
+        if (srcGroup->windows.isEmpty()) {
+            destroyGroupHeader(leaf); // last tab gone: drop header + clear reserve
+            m_tabbed.erase(srcGroup);
+        } else {
+            srcGroup->active = std::clamp(srcGroup->active, 0, int(srcGroup->windows.size()) - 1);
+        }
+    }
+
     placeWindowAt(self, target, insertBefore); // manage() evacuates `self` from `leaf` internally
 
     if (!leaf->isRoot() && leaf->childCount() == 0 && leaf->windows().isEmpty()) {
@@ -822,8 +850,10 @@ void Ki3Tiler::moveWindow(Qt::Edge edge)
             redistributeEvenly(parent);
         }
         updateSplitIndicator();
+    } else if (fromGroup && m_tabbed.contains(leaf)) {
+        refreshGroup(leaf); // group survived with remaining tabs: restack its header
     }
-    qCDebug(KWIN_KI3) << "move" << edge << self->caption();
+    qCDebug(KWIN_KI3) << "move" << edge << self->caption() << (fromGroup ? "(out of group)" : "");
     workspace()->activateWindow(self);
 }
 
