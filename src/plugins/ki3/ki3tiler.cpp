@@ -320,6 +320,16 @@ void Ki3Tiler::registerShortcuts()
     static constexpr Qt::Key digits[10] = {
         Qt::Key_1, Qt::Key_2, Qt::Key_3, Qt::Key_4, Qt::Key_5,
         Qt::Key_6, Qt::Key_7, Qt::Key_8, Qt::Key_9, Qt::Key_0};
+    // On a US layout Shift+digit produces a symbol (!, @, #, ...), and KWin's
+    // global-shortcut matching (Xkb::modifiersRelevantForGlobalShortcuts())
+    // strips the Shift modifier whenever it was "consumed" to produce that
+    // symbol -- it only puts Shift back for letters (see xkb.cpp, BUG 370341),
+    // not digits. So a physical Meta+Shift+2 press is delivered as Meta+@, and
+    // never matches a registered Meta+Shift+2 sequence. Register the produced
+    // symbol as a second binding so the move shortcuts actually fire.
+    static constexpr Qt::Key shiftedDigits[10] = {
+        Qt::Key_Exclam, Qt::Key_At, Qt::Key_NumberSign, Qt::Key_Dollar, Qt::Key_Percent,
+        Qt::Key_AsciiCircum, Qt::Key_Ampersand, Qt::Key_Asterisk, Qt::Key_ParenLeft, Qt::Key_ParenRight};
     for (int i = 0; i < 10; ++i) {
         const int n = i + 1;
         add(QStringLiteral("ki3_workspace_%1").arg(n), i18n("ki3: Switch to Workspace %1", n),
@@ -327,7 +337,8 @@ void Ki3Tiler::registerShortcuts()
             switchToWorkspace(n);
         });
         add(QStringLiteral("ki3_move_workspace_%1").arg(n), i18n("ki3: Move to Workspace %1", n),
-            {QKeySequence(Qt::META | Qt::SHIFT | digits[i])}, [this, n]() {
+            {QKeySequence(Qt::META | Qt::SHIFT | digits[i]), QKeySequence(Qt::META | shiftedDigits[i])},
+            [this, n]() {
             moveActiveToWorkspace(n);
         });
     }
