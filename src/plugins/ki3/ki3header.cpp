@@ -21,10 +21,14 @@ static const QColor s_border(0x33, 0x33, 0x33);
 static const QColor s_activeText(0xff, 0xff, 0xff);
 static const QColor s_inactiveText(0xaa, 0xaa, 0xaa);
 
-Ki3SolidOverlay::Ki3SolidOverlay()
+Ki3SolidOverlay::Ki3SolidOverlay(bool acceptsInput)
+    : m_acceptsInput(acceptsInput)
 {
-    setFlags(Qt::BypassWindowManagerHint | Qt::FramelessWindowHint
-             | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus);
+    Qt::WindowFlags flags = Qt::BypassWindowManagerHint | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus;
+    if (!acceptsInput) {
+        flags |= Qt::WindowTransparentForInput;
+    }
+    setFlags(flags);
     // Placed in AboveLayer by Window::belongsToLayer() (see internalwindow.cpp).
     setProperty("__ki3_overlay", true);
 }
@@ -39,6 +43,56 @@ void Ki3SolidOverlay::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     p.fillRect(QRectF(0, 0, width(), height()), m_color);
+}
+
+void Ki3SolidOverlay::mousePressEvent(QMouseEvent *event)
+{
+    if (m_acceptsInput) {
+        Q_EMIT pressed(event->globalPosition());
+    }
+}
+
+Ki3FloatTitleBar::Ki3FloatTitleBar()
+{
+    // Borderless, unmanaged; input arrives so the bar can be dragged. Tagged
+    // __ki3_overlay so belongsToLayer() puts it in AboveLayer (see Ki3Header).
+    setFlags(Qt::BypassWindowManagerHint | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
+    setProperty("__ki3_overlay", true);
+}
+
+qreal Ki3FloatTitleBar::barHeight()
+{
+    return 24.0;
+}
+
+void Ki3FloatTitleBar::setTitle(const QString &title)
+{
+    m_title = title;
+    update();
+}
+
+void Ki3FloatTitleBar::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, false);
+    const QFont font = QGuiApplication::font();
+    p.setFont(font);
+    const QRectF area(0, 0, width(), height());
+    p.fillRect(area, s_activeBg);
+    p.setPen(s_border);
+    p.drawRect(area.adjusted(0, 0, -1, -1));
+
+    const QFontMetrics fm(font);
+    const qreal pad = 6.0;
+    p.setPen(s_activeText);
+    const QRectF textRect = area.adjusted(pad, 0, -pad, 0);
+    const QString elided = fm.elidedText(m_title, Qt::ElideRight, int(textRect.width()));
+    p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, elided);
+}
+
+void Ki3FloatTitleBar::mousePressEvent(QMouseEvent *event)
+{
+    Q_EMIT dragRequested(event->globalPosition());
 }
 
 Ki3Header::Ki3Header()
