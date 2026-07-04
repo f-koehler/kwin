@@ -1643,7 +1643,14 @@ void Ki3Tiler::switchToWorkspace(int number)
 void Ki3Tiler::moveActiveToWorkspace(int number)
 {
     Window *window = workspace()->activeWindow();
-    if (!window || !shouldManage(window)) {
+    if (!window) {
+        return;
+    }
+    // A floating window isn't in the tile tree, but i3/sway still let it follow
+    // to the target workspace — it just stays floating there instead of being
+    // re-tiled. Everything else must be a window ki3 actually tiles.
+    const bool floating = m_floatingWindows.contains(window);
+    if (!floating && !shouldManage(window)) {
         return;
     }
     VirtualDesktop *desktop = getOrCreateDesktop(number);
@@ -1659,14 +1666,20 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
     if (!home) {
         home = outputShowingDesktop(desktop);
     }
-    forgetWindow(window);
+    if (!floating) {
+        forgetWindow(window);
+    }
     window->setDesktops({desktop});
     if (home && home != window->output()) {
         window->sendToOutput(home);
     }
-    qCDebug(KWIN_KI3) << "move window to workspace" << number
+    qCDebug(KWIN_KI3) << "move" << (floating ? "floating " : "") << "window to workspace" << number
                       << "on output" << (void *)window->output();
-    insertWindow(window);
+    if (floating) {
+        repositionFloatChrome(window); // hide/reposition chrome for its new desktop
+    } else {
+        insertWindow(window);
+    }
     schedulePrune(); // the source desktop may now be empty
 }
 
