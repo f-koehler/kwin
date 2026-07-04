@@ -1034,6 +1034,11 @@ void Ki3Tiler::setContainerMode(ContainerMode mode)
     }
     st.active = std::max(0, int(windows.indexOf(active)));
     m_tabbed.insert(container, st);
+    // Drop the entry the instant the container tile is destroyed (e.g. an
+    // output unplug tears down its tile tree), so the raw-pointer key never
+    // dangles. UniqueConnection dedupes if the same tile is re-tabbed later.
+    connect(container, &QObject::destroyed, this, &Ki3Tiler::onGroupTileDestroyed,
+            Qt::UniqueConnection);
     m_lastFocusedLeaf = container;
 
     qCInfo(KWIN_KI3) << (mode == ContainerMode::Tabbed ? "tabbed" : "stacked")
@@ -1223,6 +1228,15 @@ void Ki3Tiler::onGroupGeometryChanged()
 {
     if (auto *tile = qobject_cast<CustomTile *>(sender()); tile && m_tabbed.contains(tile)) {
         refreshGroup(tile);
+    }
+}
+
+void Ki3Tiler::onGroupTileDestroyed(QObject *tile)
+{
+    // The tile is mid-destruction; use it as a bare key only (no dereference).
+    // qobject_cast would already return nullptr here, so cast statically.
+    if (m_tabbed.remove(static_cast<CustomTile *>(tile)) > 0) {
+        qCDebug(KWIN_KI3) << "tab group tile destroyed; dropped stale entry";
     }
 }
 
