@@ -122,7 +122,11 @@ void Ki3Tiler::repositionFloatChrome(Window *window)
     const qreal barHeight = Ki3FloatTitleBar::barHeight();
     const RectF geom = window->frameGeometry();
 
-    const QRectF titleRect(geom.left(), geom.top() - barHeight, geom.width(), barHeight);
+    // Extend by `thickness` on each side to match the left/right resize
+    // strips' outer edges below -- otherwise the bar's top corners fall short
+    // of them, leaving a small notch where the strips stick out past it.
+    const QRectF titleRect(geom.left() - thickness, geom.top() - barHeight,
+                           geom.width() + 2 * thickness, barHeight);
     chrome.titleBar->setGeometry(titleRect.toRect());
     chrome.titleBar->setTitle(window->caption());
     chrome.titleBar->show();

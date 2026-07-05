@@ -39,11 +39,6 @@
 namespace KWin
 {
 
-// Shared thickness (device-independent px) of every leaf-edge overlay: the
-// split-direction hint, the resize-mode border, and the focused-window border.
-// Kept in one place so they stay visually consistent.
-static constexpr qreal kIndicatorThickness = 3.0;
-
 // Linear-RGB blend of @p a and @p b, @p t of the way from a to b.
 static QColor mixColors(const QColor &a, const QColor &b, qreal t)
 {
