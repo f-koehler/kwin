@@ -974,35 +974,48 @@ void Ki3Tiler::moveFocus(Qt::Edge edge)
     }
 
     // Inside a tab/stack group, motion along the container's axis cycles the
-    // visible tab (tabbed: left/right; stacked: up/down) instead of leaving it.
+    // visible tab (tabbed: left/right; stacked: up/down) instead of leaving it,
+    // unless the active tab is already at that end. There we first try to
+    // leave the group like a normal neighbour move, and only wrap within the
+    // group as a fallback if there's truly nowhere else to go -- mirrors i3's
+    // focus_wrapping: escape outward first, wrap only at a genuine dead end.
     if (auto it = m_tabbed.constFind(leaf); it != m_tabbed.constEnd()) {
         const bool horizontal = (edge == Qt::LeftEdge || edge == Qt::RightEdge);
         const bool alongAxis = (it->mode == ContainerMode::Tabbed) ? horizontal : !horizontal;
         if (alongAxis) {
-            cycleTab(leaf, (edge == Qt::RightEdge || edge == Qt::BottomEdge) ? +1 : -1);
+            const int delta = (edge == Qt::RightEdge || edge == Qt::BottomEdge) ? +1 : -1;
+            const bool atBoundary = (delta > 0) ? (it->active >= it->windows.size() - 1) : (it->active <= 0);
+            if (!atBoundary || !leaveLeaf(leaf, edge)) {
+                cycleTab(leaf, delta);
+            }
             return;
         }
     }
 
+    leaveLeaf(leaf, edge);
+}
+
+bool Ki3Tiler::leaveLeaf(CustomTile *leaf, Qt::Edge edge)
+{
     // Neighbour within the same output's tree.
     if (CustomTile *target = leaf->nextNonLayoutTileAt(edge)) {
         if (!target->windows().isEmpty()) {
             qCDebug(KWIN_KI3) << "focus" << edge << leaf->relativeGeometry() << "->" << target->relativeGeometry();
             workspace()->activateWindow(target->windows().constFirst());
         }
-        return;
+        return true;
     }
 
     // At the output edge: cross to the adjacent output in that direction.
-    moveFocusAcrossOutput(leaf, edge);
+    return moveFocusAcrossOutput(leaf, edge);
 }
 
-void Ki3Tiler::moveFocusAcrossOutput(CustomTile *leaf, Qt::Edge edge)
+bool Ki3Tiler::moveFocusAcrossOutput(CustomTile *leaf, Qt::Edge edge)
 {
     TileManager *manager = leaf->manager();
     LogicalOutput *output = manager ? manager->output() : nullptr;
     if (!output) {
-        return;
+        return false;
     }
     const RectF geom = output->geometryF();
     const RectF leafGeom = leaf->absoluteGeometry();
@@ -1028,16 +1041,16 @@ void Ki3Tiler::moveFocusAcrossOutput(CustomTile *leaf, Qt::Edge edge)
     qCDebug(KWIN_KI3) << "cross-output probe" << edge << probe << "from" << (void *)output
                       << "-> nextOutput" << (void *)nextOutput;
     if (!nextOutput || nextOutput == output) {
-        return;
+        return false;
     }
     TileManager *nextManager = workspace()->tileManager(nextOutput);
     if (!nextManager) {
-        return;
+        return false;
     }
     VirtualDesktop *desktop = VirtualDesktopManager::self()->currentDesktop(nextOutput);
     RootTile *nextRoot = nextManager->rootTile(desktop);
     if (!nextRoot) {
-        return;
+        return false;
     }
 
     // Entry point just inside the adjacent output near the shared edge.
@@ -1065,7 +1078,9 @@ void Ki3Tiler::moveFocusAcrossOutput(CustomTile *leaf, Qt::Edge edge)
     if (target && !target->windows().isEmpty()) {
         qCDebug(KWIN_KI3) << "focus" << edge << "across output ->" << target->absoluteGeometry();
         workspace()->activateWindow(target->windows().constFirst());
+        return true;
     }
+    return false;
 }
 
 void Ki3Tiler::moveWindow(Qt::Edge edge)

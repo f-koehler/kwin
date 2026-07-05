@@ -285,8 +285,15 @@ private:
     /** Move keyboard focus to the neighbouring leaf in @p edge direction. */
     void moveFocus(Qt::Edge edge);
 
-    /** Move focus from @p leaf to the adjacent output in @p edge direction. */
-    void moveFocusAcrossOutput(CustomTile *leaf, Qt::Edge edge);
+    /**
+     * Move focus from @p leaf to a neighbouring tile (same output, then
+     * adjacent output) in @p edge direction. Returns whether a target was
+     * found and focused.
+     */
+    bool leaveLeaf(CustomTile *leaf, Qt::Edge edge);
+
+    /** Move focus from @p leaf to the adjacent output in @p edge direction. Returns success. */
+    bool moveFocusAcrossOutput(CustomTile *leaf, Qt::Edge edge);
 
     /** Swap the active window with its neighbour in @p edge direction. */
     void moveWindow(Qt::Edge edge);

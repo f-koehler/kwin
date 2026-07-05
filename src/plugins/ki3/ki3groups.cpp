@@ -276,8 +276,9 @@ void Ki3Tiler::refreshGroup(CustomTile *tile)
     for (const QPointer<Window> &w : st.windows) {
         titles << (w ? w->caption() : QString());
     }
+    const bool focused = (workspace()->activeWindow() == active);
     st.header->setGeometry(headerRect.toRect());
-    st.header->setTabs(titles, st.active, stacked);
+    st.header->setTabs(titles, st.active, stacked, focused);
     st.header->show();
 
     qCDebug(KWIN_KI3) << "group header:" << st.windows.size() << (stacked ? "stacked" : "tabbed")

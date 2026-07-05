@@ -116,11 +116,12 @@ qreal Ki3Header::heightForTabs(int count, bool stacked)
     return stacked ? rowHeight() * count : rowHeight();
 }
 
-void Ki3Header::setTabs(const QStringList &titles, int active, bool stacked)
+void Ki3Header::setTabs(const QStringList &titles, int active, bool stacked, bool focused)
 {
     m_titles = titles;
     m_active = active;
     m_stacked = stacked;
+    m_focused = focused;
     // update() (QPaintDeviceWindow) marks the surface dirty and schedules a
     // paintEvent; requestUpdate() alone only posts an UpdateRequest without
     // dirtying, so the header would never repaint after its first expose.
@@ -159,7 +160,7 @@ void Ki3Header::paintEvent(QPaintEvent *)
             cell = QRectF(i * w, 0, w, height());
         }
 
-        const bool isActive = (i == m_active);
+        const bool isActive = (i == m_active) && m_focused;
         p.fillRect(cell, isActive ? m_palette.activeBg : m_palette.inactiveBg);
         p.setPen(m_palette.border);
         p.drawRect(cell.adjusted(0, 0, -1, -1));
