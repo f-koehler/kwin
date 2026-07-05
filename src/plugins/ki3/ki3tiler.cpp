@@ -323,6 +323,15 @@ void Ki3Tiler::registerShortcuts()
         closeActiveWindow();
     });
 
+    // Steal KDE's stock Meta+PgUp/PgDown (Window Maximize/Minimize) and no-op
+    // them: ki3 has no maximize/minimize handling, so either action would
+    // desync a tiled window from the tile tree, same class of problem as the
+    // Overview effect's Meta+W above.
+    add(QStringLiteral("ki3_noop_maximize"), i18n("ki3: Disabled Window Maximize"),
+        {QKeySequence(Qt::META | Qt::Key_PageUp)}, []() { });
+    add(QStringLiteral("ki3_noop_minimize"), i18n("ki3: Disabled Window Minimize"),
+        {QKeySequence(Qt::META | Qt::Key_PageDown)}, []() { });
+
     // Workspaces: Meta+1..9,0 switch, Meta+Shift+1..9,0 move window. As in
     // i3/sway, Meta+0 is workspace 10.
     static constexpr Qt::Key digits[10] = {
