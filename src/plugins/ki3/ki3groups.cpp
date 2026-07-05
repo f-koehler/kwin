@@ -261,9 +261,14 @@ void Ki3Tiler::refreshGroup(CustomTile *tile)
         return;
     }
 
-    // The header sits directly above the reserved window area, same width.
+    // The header sits directly above the reserved window area, extended by
+    // kIndicatorThickness on each side to line up with the tile border's
+    // left/right strips (see outwardBorderStrips() in ki3tiler.cpp) instead of
+    // falling short of them -- same fix as the floating title bar's
+    // repositionFloatChrome() got earlier.
     const RectF content = tile->windowGeometry();
-    const QRectF headerRect(content.left(), content.top() - headerPx, content.width(), headerPx);
+    const QRectF headerRect(content.left() - kIndicatorThickness, content.top() - headerPx,
+                            content.width() + 2 * kIndicatorThickness, headerPx);
 
     QStringList titles;
     titles.reserve(st.windows.size());

@@ -33,6 +33,13 @@ class RootTile;
 class VirtualDesktop;
 class Window;
 
+// Shared thickness (device-independent px) of every leaf-edge overlay: the
+// split-direction hint, the resize-mode border, and the tile border (see
+// ki3tiler.cpp's outwardBorderStrips()). Shared with ki3groups.cpp's
+// refreshGroup() so a tab/stack group's header lines up with the same
+// leaf's left/right border strips instead of falling short of them.
+static constexpr qreal kIndicatorThickness = 3.0;
+
 /**
  * Exported on D-Bus as KWin's own /Ki3 object (service "org.kde.KWin", which
  * KWin's DBusInterface already owns) so external UI — e.g. the ki3-pager
