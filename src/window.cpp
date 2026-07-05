@@ -2077,6 +2077,13 @@ bool Window::performMousePressCommand(Options::MouseCommand cmd, const QPointF &
         if (!isMovableAcrossScreens()) {
             break;
         }
+        if (tile()) {
+            // A tile (e.g. ki3's tree) is authoritative over this window's
+            // geometry; a free-form drag would fight it on the next layout
+            // pass. Floating windows have no tile (see e.g. Ki3Tiler's
+            // requestTile(nullptr) on float), so this only affects tiled ones.
+            break;
+        }
         if (isInteractiveMoveResize()) {
             finishInteractiveMoveResize(false);
         }
@@ -2096,6 +2103,10 @@ bool Window::performMousePressCommand(Options::MouseCommand cmd, const QPointF &
     case Options::MouseResize:
     case Options::MouseUnrestrictedResize: {
         if (!isResizable()) {
+            break;
+        }
+        if (tile()) {
+            // See the matching MouseMove/MouseUnrestrictedMove guard above.
             break;
         }
         if (isInteractiveMoveResize()) {
