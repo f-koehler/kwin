@@ -1102,6 +1102,26 @@ void Ki3Tiler::moveWindow(Qt::Edge edge)
         }
         const int idx = std::clamp(srcGroup->active, 0, int(srcGroup->windows.size()) - 1);
         self = srcGroup->windows[idx];
+
+        // Motion along the container's axis (tabbed: left/right, stacked:
+        // up/down) reorders the tab in place first, mirroring moveFocus()'s
+        // cycleTab-before-leave semantics -- only once the active tab is
+        // already at that end does the move fall through below to pop it out
+        // toward the neighbouring leaf.
+        const bool horizontal = (edge == Qt::LeftEdge || edge == Qt::RightEdge);
+        const bool alongAxis = (srcGroup->mode == ContainerMode::Tabbed) ? horizontal : !horizontal;
+        if (alongAxis) {
+            const int delta = (edge == Qt::RightEdge || edge == Qt::BottomEdge) ? +1 : -1;
+            const int newIdx = idx + delta;
+            if (newIdx >= 0 && newIdx < srcGroup->windows.size()) {
+                srcGroup->windows.swapItemsAt(idx, newIdx);
+                srcGroup->active = newIdx;
+                qCDebug(KWIN_KI3) << "tab reorder -> active" << newIdx;
+                refreshGroup(leaf);
+                workspace()->activateWindow(self);
+                return;
+            }
+        }
     } else {
         self = leaf->windows().constFirst();
     }
