@@ -386,6 +386,13 @@ private:
     /** Whether a non-tileable rule (built-in or user-configured) matches @p window. */
     bool isNonTileable(const Window *window) const;
 
+    /**
+     * True if some ordinary window stacked above @p window overlaps its frame
+     * (e.g. a modal dialog raised over its tiled parent) -- see the definition
+     * for why a not-yet-tiled window ki3 will manage momentarily is excluded.
+     */
+    bool leafWindowOccluded(Window *window) const;
+
     /** Insert a manageable window into its output/desktop tile tree. */
     void insertWindow(Window *window);
 
@@ -420,6 +427,18 @@ private:
 
     /** Reposition and repaint @p window's floating chrome to match its current geometry/title. */
     void repositionFloatChrome(Window *window);
+
+    /**
+     * Show/hide @p window's resize-strip border to match focus, like a tiled
+     * window's focus indicator (updateFocusIndicator()): visible in the same
+     * m_focusBorderColor when @p window is the active window, hidden
+     * otherwise. Called on activation changes and colour-scheme updates; see
+     * applyIndicatorColors().
+     */
+    void updateFloatChromeBorder(Window *window);
+
+    /** updateFloatChromeBorder() for every floating window with chrome. */
+    void updateAllFloatChromeBorders();
 
     /** Root tile for the window's output and (current) desktop, or nullptr. */
     RootTile *rootForWindow(Window *window) const;
@@ -523,6 +542,11 @@ private:
 
     // The leaf m_focusBorder is currently tracking; see m_splitIndicatorLeaf.
     QPointer<CustomTile> m_focusIndicatorLeaf;
+
+    // Cached copy of the colour applyIndicatorColors() computes for
+    // m_focusBorder, reused for a focused floating window's chrome border
+    // (see updateFloatChromeBorder()) so both borders always match.
+    QColor m_focusBorderColor;
 
     // Watches kdeglobals so applyIndicatorColors() re-reads the scheme when the
     // user switches colour scheme, keeping the overlays' accents live (matching

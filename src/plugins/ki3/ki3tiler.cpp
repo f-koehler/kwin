@@ -70,7 +70,7 @@ static std::array<RectF, 4> borderStrips(const RectF &geom)
 // paint *over* such a window, so callers hide the border while it is covered.
 // Our own internal overlays and the outline are skipped (they always stack
 // above), as are windows that aren't shown on the current desktop.
-static bool leafWindowOccluded(Window *window)
+bool Ki3Tiler::leafWindowOccluded(Window *window) const
 {
     const QList<Window *> &stack = workspace()->stackingOrder();
     const int idx = stack.indexOf(window);
@@ -84,6 +84,17 @@ static bool leafWindowOccluded(Window *window)
             continue;
         }
         if (!above->isShown() || !above->isOnCurrentDesktop()) {
+            continue;
+        }
+        // A window ki3 is about to tile itself, but hasn't gotten to yet, briefly
+        // sits at its own unconstrained placement (typically ~fullscreen) between
+        // being mapped and insertWindow() assigning it a real tile slot -- e.g. its
+        // windowActivated can fire before its windowAdded is processed, so
+        // currentLeaf() still resolves to the *previous* leaf right as the new
+        // window happens to overlap it. That's transit, not a real dialog sitting
+        // on top, so don't let it hide the border -- once insertWindow() places it,
+        // the subsequent updateSplitIndicator() call re-checks with real geometry.
+        if (!m_leafForWindow.contains(above) && shouldManage(above)) {
             continue;
         }
         if (above->frameGeometry().intersects(geom)) {
@@ -658,6 +669,11 @@ void Ki3Tiler::applyIndicatorColors()
     for (auto &strip : m_focusBorder) {
         strip->setColor(focusColor);
     }
+
+    // Reused for a focused floating window's chrome border, so both borders
+    // track a colour-scheme switch together.
+    m_focusBorderColor = focusColor;
+    updateAllFloatChromeBorders();
 }
 
 void Ki3Tiler::updateSplitIndicator()
@@ -1106,6 +1122,9 @@ void Ki3Tiler::handleWindowActivated(Window *window)
     // Reposition/hide group headers (covers desktop switches, which activate a
     // window on the newly shown desktop).
     refreshAllGroups();
+    // A floating window's chrome border tracks focus the same way; see
+    // updateFloatChromeBorder().
+    updateAllFloatChromeBorders();
 }
 
 void Ki3Tiler::insertWindow(Window *window)
