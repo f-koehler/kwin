@@ -127,8 +127,14 @@ public:
      */
     static qreal heightForTabs(int count, bool stacked);
 
-    /** Update the drawn tabs and repaint. @p active is highlighted. */
-    void setTabs(const QStringList &titles, int active, bool stacked);
+    /**
+     * Update the drawn tabs and repaint. @p active is highlighted; it only
+     * gets the "focused" colour when @p focused is true (the group's active
+     * window actually holds KWin keyboard focus) -- otherwise it's painted
+     * like any other inactive tab, so the header stops claiming focus once
+     * it's moved elsewhere.
+     */
+    void setTabs(const QStringList &titles, int active, bool stacked, bool focused);
 
     /** Set the colours to paint with (see Ki3HeaderPalette) and repaint. */
     void setPalette(const Ki3HeaderPalette &palette);
@@ -148,6 +154,7 @@ private:
     QStringList m_titles;
     int m_active = 0;
     bool m_stacked = false;
+    bool m_focused = false;
     Ki3HeaderPalette m_palette;
 };
 
