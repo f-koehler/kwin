@@ -682,27 +682,47 @@ void Ki3Tiler::applyIndicatorColors()
         strip->setColor(resizeColor);
     }
 
-    // Focused tile border: a dimmed sibling of the split indicator's highlight,
-    // mixed halfway toward the window background so it stays clearly distinct
-    // from the full-strength highlight the split strip draws on top of it (the
-    // scheme's FocusColor role can equal the selection colour, hiding the
-    // split strip).
+    // Window chrome (tile borders, tab/stack headers, floating title bar):
+    // border/text/unfocused-background come from KColorScheme's Header set —
+    // the same role KWin's own window decorations use for their titlebar —
+    // but the *focused* background reuses the split indicator's own
+    // highlight, mixed halfway toward the view background so it reads as a
+    // muted accent rather than the raw selection colour. The Header set's own
+    // Active background turned out to have poor/inverted contrast against its
+    // Inactive background in some colour schemes -- barely distinguishable
+    // from "unfocused", the opposite of the point -- so it isn't used for the
+    // focused background itself (see the 2026-07-05 PLAN entry).
+    const KColorScheme activeHeader(QPalette::Active, KColorScheme::Header);
+    const KColorScheme inactiveHeader(QPalette::Inactive, KColorScheme::Header);
     const QColor windowBg = KColorScheme(QPalette::Active, KColorScheme::View)
                                 .background(KColorScheme::NormalBackground)
                                 .color();
     m_focusBorderColor = mixColors(highlight, windowBg, 0.5);
+    m_unfocusedBorderColor = inactiveHeader.background().color();
+    m_headerPalette.activeBg = m_focusBorderColor;
+    m_headerPalette.inactiveBg = m_unfocusedBorderColor;
+    m_headerPalette.border = activeHeader.background(KColorScheme::AlternateBackground).color();
+    m_headerPalette.activeText = activeHeader.foreground().color();
+    m_headerPalette.inactiveText = inactiveHeader.foreground().color();
 
-    // Unfocused tile border: the scheme's inactive-text foreground — a subtle
-    // tint that keeps the boundary between tiles visible even when neither
-    // side has focus, without competing with the accent colour above.
-    m_unfocusedBorderColor = KColorScheme(QPalette::Active, KColorScheme::View)
-                                 .foreground(KColorScheme::InactiveText)
-                                 .color();
-
-    // Reused for a focused floating window's chrome border, so both borders
-    // track a colour-scheme switch together.
+    // Reused for a focused floating window's chrome border and every tab/
+    // stack header + floating title bar, so all of ki3's own chrome tracks a
+    // colour-scheme switch together.
     updateTileBorders();
     updateAllFloatChromeBorders();
+    updateHeaderPalette();
+}
+
+void Ki3Tiler::updateHeaderPalette()
+{
+    for (auto it = m_tabbed.begin(); it != m_tabbed.end(); ++it) {
+        if (it->header) {
+            it->header->setPalette(m_headerPalette);
+        }
+    }
+    for (auto it = m_floatChrome.begin(); it != m_floatChrome.end(); ++it) {
+        it->titleBar->setPalette(m_headerPalette);
+    }
 }
 
 void Ki3Tiler::scheduleBorderRecheck()

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "ki3header.h"
 #include "ki3rules.h"
 #include "plugin.h"
 #include "tiles/tile.h"
@@ -25,8 +26,6 @@ namespace KWin
 {
 
 class CustomTile;
-class Ki3FloatTitleBar;
-class Ki3Header;
 class Ki3SolidOverlay;
 class LogicalOutput;
 class RootTile;
@@ -271,12 +270,17 @@ private:
     /**
      * (Re)apply the colour-scheme-derived colours to the overlay windows: the
      * split indicator uses the scheme's selection background (Kirigami's
-     * Theme.highlightColor, matching ki3-pager's active-desktop accent) and the
-     * resize border its neutral/negative accent. Called at construction and
-     * whenever kdeglobals changes (see m_colorSchemeWatcher) so both track a
-     * live colour-scheme switch the way ki3-pager's Kirigami colours do.
+     * Theme.highlightColor, matching ki3-pager's active-desktop accent), the
+     * resize border its neutral/negative accent, and the tile borders/tab-
+     * stack headers/floating title bar all share KColorScheme's Header set
+     * (see m_headerPalette). Called at construction and whenever kdeglobals
+     * changes (see m_colorSchemeWatcher) so all of these track a live colour-
+     * scheme switch the way ki3-pager's Kirigami colours do.
      */
     void applyIndicatorColors();
+
+    /** Push m_headerPalette to every existing tab/stack header and floating title bar. */
+    void updateHeaderPalette();
 
     /** Move keyboard focus to the neighbouring leaf in @p edge direction. */
     void moveFocus(Qt::Edge edge);
@@ -618,6 +622,13 @@ private:
     // when neither side has focus, preventing the accent border from simply
     // popping in/out as focus moves (see updateTileBorders()).
     QColor m_unfocusedBorderColor;
+
+    // Cached KColorScheme::Header-derived palette applyIndicatorColors()
+    // computes, pushed to every tab/stack header and floating title bar (see
+    // updateHeaderPalette()) and to freshly-created ones in refreshGroup()/
+    // createFloatChrome(). m_focusBorderColor/m_unfocusedBorderColor are its
+    // activeBg/inactiveBg, so tile borders and headers always match.
+    Ki3HeaderPalette m_headerPalette;
 
     // Watches kdeglobals so applyIndicatorColors() re-reads the scheme when the
     // user switches colour scheme, keeping the overlays' accents live (matching

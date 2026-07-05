@@ -244,6 +244,7 @@ void Ki3Tiler::refreshGroup(CustomTile *tile)
 
     if (!st.header) {
         st.header = std::make_shared<Ki3Header>();
+        st.header->setPalette(m_headerPalette);
         connect(st.header.get(), &Ki3Header::tabActivated, this,
                 [this, tile](int index) {
             activateTab(tile, index);

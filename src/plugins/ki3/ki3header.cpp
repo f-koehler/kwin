@@ -14,13 +14,6 @@
 namespace KWin
 {
 
-// i3-ish palette. TODO(config): expose these once the mechanism is confirmed.
-static const QColor s_bg(0x22, 0x22, 0x22);
-static const QColor s_activeBg(0x28, 0x5c, 0x88); // i3 "focused" blue
-static const QColor s_border(0x33, 0x33, 0x33);
-static const QColor s_activeText(0xff, 0xff, 0xff);
-static const QColor s_inactiveText(0xaa, 0xaa, 0xaa);
-
 Ki3SolidOverlay::Ki3SolidOverlay(bool acceptsInput)
     : m_acceptsInput(acceptsInput)
 {
@@ -71,6 +64,12 @@ void Ki3FloatTitleBar::setTitle(const QString &title)
     update();
 }
 
+void Ki3FloatTitleBar::setPalette(const Ki3HeaderPalette &palette)
+{
+    m_palette = palette;
+    update();
+}
+
 void Ki3FloatTitleBar::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -78,13 +77,13 @@ void Ki3FloatTitleBar::paintEvent(QPaintEvent *)
     const QFont font = QGuiApplication::font();
     p.setFont(font);
     const QRectF area(0, 0, width(), height());
-    p.fillRect(area, s_activeBg);
-    p.setPen(s_border);
+    p.fillRect(area, m_palette.activeBg);
+    p.setPen(m_palette.border);
     p.drawRect(area.adjusted(0, 0, -1, -1));
 
     const QFontMetrics fm(font);
     const qreal pad = 6.0;
-    p.setPen(s_activeText);
+    p.setPen(m_palette.activeText);
     const QRectF textRect = area.adjusted(pad, 0, -pad, 0);
     const QString elided = fm.elidedText(m_title, Qt::ElideRight, int(textRect.width()));
     p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, elided);
@@ -128,6 +127,12 @@ void Ki3Header::setTabs(const QStringList &titles, int active, bool stacked)
     update();
 }
 
+void Ki3Header::setPalette(const Ki3HeaderPalette &palette)
+{
+    m_palette = palette;
+    update();
+}
+
 void Ki3Header::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -135,7 +140,7 @@ void Ki3Header::paintEvent(QPaintEvent *)
     const QFont font = QGuiApplication::font();
     p.setFont(font);
     const QRectF area(0, 0, width(), height());
-    p.fillRect(area, s_bg);
+    p.fillRect(area, m_palette.inactiveBg);
 
     const int n = m_titles.size();
     if (n == 0) {
@@ -155,11 +160,11 @@ void Ki3Header::paintEvent(QPaintEvent *)
         }
 
         const bool isActive = (i == m_active);
-        p.fillRect(cell, isActive ? s_activeBg : s_bg);
-        p.setPen(s_border);
+        p.fillRect(cell, isActive ? m_palette.activeBg : m_palette.inactiveBg);
+        p.setPen(m_palette.border);
         p.drawRect(cell.adjusted(0, 0, -1, -1));
 
-        p.setPen(isActive ? s_activeText : s_inactiveText);
+        p.setPen(isActive ? m_palette.activeText : m_palette.inactiveText);
         const QRectF textRect = cell.adjusted(pad, 0, -pad, 0);
         const QString elided = fm.elidedText(m_titles[i], Qt::ElideRight, int(textRect.width()));
         p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, elided);

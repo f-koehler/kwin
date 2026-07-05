@@ -14,6 +14,23 @@ namespace KWin
 {
 
 /**
+ * KColorScheme-derived colours shared by Ki3Header and Ki3FloatTitleBar so
+ * both paint from the active colour scheme's Header set (the same role
+ * KWin's own window decorations draw their titlebar from) instead of a fixed
+ * i3-ish palette. Computed once in Ki3Tiler::applyIndicatorColors() and
+ * pushed to every header/title bar via setPalette() -- at creation, and again
+ * whenever the colour scheme changes.
+ */
+struct Ki3HeaderPalette
+{
+    QColor activeBg;
+    QColor inactiveBg;
+    QColor border;
+    QColor activeText;
+    QColor inactiveText;
+};
+
+/**
  * A plain solid-colour internal overlay window (used for the split-direction
  * indicator and, with @p acceptsInput, the floating-window resize strips). A
  * QRasterWindow rather than a QQuickWindow so it renders through KWin's
@@ -68,6 +85,9 @@ public:
     /** Update the drawn title and repaint. */
     void setTitle(const QString &title);
 
+    /** Set the colours to paint with (see Ki3HeaderPalette) and repaint. */
+    void setPalette(const Ki3HeaderPalette &palette);
+
 Q_SIGNALS:
     /** The bar was pressed; @p globalPos is where, in global coordinates. */
     void dragRequested(const QPointF &globalPos);
@@ -78,6 +98,7 @@ protected:
 
 private:
     QString m_title;
+    Ki3HeaderPalette m_palette;
 };
 
 /**
@@ -109,6 +130,9 @@ public:
     /** Update the drawn tabs and repaint. @p active is highlighted. */
     void setTabs(const QStringList &titles, int active, bool stacked);
 
+    /** Set the colours to paint with (see Ki3HeaderPalette) and repaint. */
+    void setPalette(const Ki3HeaderPalette &palette);
+
 Q_SIGNALS:
     /** A tab was clicked; @p index is its position in the titles list. */
     void tabActivated(int index);
@@ -124,6 +148,7 @@ private:
     QStringList m_titles;
     int m_active = 0;
     bool m_stacked = false;
+    Ki3HeaderPalette m_palette;
 };
 
 } // namespace KWin
