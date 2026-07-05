@@ -721,13 +721,12 @@ bool XdgToplevelWindow::isMaximizable() const
 
 bool XdgToplevelWindow::isMinimizable() const
 {
-    if ((isSpecialWindow() && !isTransient()) || isAppletPopup()) {
-        return false;
-    }
-    if (!rules()->checkMinimize(true)) {
-        return false;
-    }
-    return true;
+    // ki3 has no minimize handling and no way to restore a minimized window
+    // (no taskbar/pager in the i3/sway paradigm) — a minimized window would
+    // just disappear, orphaning its tile/floating decoration behind it.
+    // Disable minimizing outright rather than special-casing tiled vs.
+    // floating windows.
+    return false;
 }
 
 bool XdgToplevelWindow::isPlaceable() const
@@ -1100,6 +1099,15 @@ void XdgToplevelWindow::handleStatesAcknowledged(const XdgToplevelInterface::Sta
 
 void XdgToplevelWindow::handleMaximizeRequested()
 {
+    // CSD windows (Firefox, GTK apps, ...) draw their own maximize button and
+    // send this request directly via the xdg-shell protocol, bypassing the
+    // ki3_noop_maximize global shortcut. ki3 has no maximize handling, so
+    // honoring it here would desync a tiled window from the tile tree; ignore
+    // it for windows ki3 currently manages, same as the shortcut no-op does.
+    // Floating (untiled) windows are unaffected.
+    if (tile()) {
+        return;
+    }
     if (m_isInitialized) {
         maximize(MaximizeFull);
         scheduleConfigure();

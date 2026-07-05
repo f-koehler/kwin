@@ -1078,42 +1078,10 @@ bool X11Window::isFullScreenable() const
  */
 bool X11Window::isMinimizable() const
 {
-    if (isSpecialWindow() && !isTransient()) {
-        return false;
-    }
-    if (isAppletPopup()) {
-        return false;
-    }
-    if (!rules()->checkMinimize(true)) {
-        return false;
-    }
-
-    if (isTransient()) {
-        // #66868 - Let other xmms windows be minimized when the mainwindow is minimized
-        bool shown_mainwindow = false;
-        auto mainwindows = mainWindows();
-        for (auto it = mainwindows.constBegin(); it != mainwindows.constEnd(); ++it) {
-            if ((*it)->isShown()) {
-                shown_mainwindow = true;
-            }
-        }
-        if (!shown_mainwindow) {
-            return true;
-        }
-    }
-#if 0
-    // This is here because kicker's taskbar doesn't provide separate entries
-    // for windows with an explicitly given parent
-    // TODO: perhaps this should be redone
-    // Disabled for now, since at least modal dialogs should be minimizable
-    // (resulting in the mainwindow being minimized too).
-    if (transientFor() != NULL)
-        return false;
-#endif
-    if (!wantsTabFocus()) { // SELI, TODO: - NET::Utility? why wantsTabFocus() - skiptaskbar? ?
-        return false;
-    }
-    return true;
+    // ki3 has no minimize handling and no way to restore a minimized window
+    // (no taskbar/pager in the i3/sway paradigm) — see the equivalent
+    // XdgToplevelWindow::isMinimizable() for the Wayland/XDG side of this.
+    return false;
 }
 
 void X11Window::doMinimize()
