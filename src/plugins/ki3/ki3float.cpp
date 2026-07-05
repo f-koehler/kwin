@@ -60,6 +60,7 @@ void Ki3Tiler::createFloatChrome(Window *window)
 
     FloatChrome chrome;
     chrome.titleBar = std::make_shared<Ki3FloatTitleBar>();
+    chrome.titleBar->setPalette(m_headerPalette);
     connect(chrome.titleBar.get(), &Ki3FloatTitleBar::dragRequested, this,
             [window](const QPointF &globalPos) {
         window->performMousePressCommand(Options::MouseMove, globalPos);
