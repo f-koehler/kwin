@@ -782,7 +782,15 @@ void Ki3Tiler::updateFocusIndicator()
     }
 
     const auto strips = borderStrips(leaf->windowGeometry());
+    // A tab/stack group already has its own header showing the title right
+    // above windowGeometry() (see refreshGroup()); the top strip there would
+    // just be redundant wasted space, so skip it for grouped leaves only.
+    const bool skipTop = m_tabbed.contains(leaf);
     for (int i = 0; i < 4; ++i) {
+        if (i == 0 && skipTop) {
+            m_focusBorder[i]->hide();
+            continue;
+        }
         m_focusBorder[i]->setGeometry(strips[i].toRect());
         m_focusBorder[i]->show();
     }
