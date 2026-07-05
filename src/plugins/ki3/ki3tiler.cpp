@@ -64,6 +64,35 @@ static std::array<RectF, 4> borderStrips(const RectF &geom)
     };
 }
 
+// True if some ordinary window stacked above @p window overlaps its frame — e.g.
+// a modal dialog (a gpg pinentry) raised over its tiled parent. The leaf-edge
+// overlays (focus/split/resize) live in KWin's AboveLayer and would otherwise
+// paint *over* such a window, so callers hide the border while it is covered.
+// Our own internal overlays and the outline are skipped (they always stack
+// above), as are windows that aren't shown on the current desktop.
+static bool leafWindowOccluded(Window *window)
+{
+    const QList<Window *> &stack = workspace()->stackingOrder();
+    const int idx = stack.indexOf(window);
+    if (idx < 0) {
+        return false;
+    }
+    const RectF geom = window->frameGeometry();
+    for (int i = idx + 1; i < stack.size(); ++i) {
+        Window *above = stack.at(i);
+        if (above->isInternal() || above->isOutline() || above->isDeleted()) {
+            continue;
+        }
+        if (!above->isShown() || !above->isOnCurrentDesktop()) {
+            continue;
+        }
+        if (above->frameGeometry().intersects(geom)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 Ki3Tiler::Ki3Tiler()
     : m_splitIndicatorWindow(std::make_unique<Ki3SolidOverlay>())
 {
@@ -655,7 +684,7 @@ void Ki3Tiler::updateSplitIndicator()
     Window *window = (leaf && leaf->childCount() == 0 && !leaf->windows().isEmpty())
         ? leaf->windows().constFirst()
         : nullptr;
-    if (!window || !window->isShown() || !window->isOnCurrentDesktop()) {
+    if (!window || !window->isShown() || !window->isOnCurrentDesktop() || leafWindowOccluded(window)) {
         m_splitIndicatorWindow->hide();
         return;
     }
@@ -687,7 +716,7 @@ void Ki3Tiler::updateResizeIndicator()
     Window *window = (leaf && leaf->childCount() == 0 && !leaf->windows().isEmpty())
         ? leaf->windows().constFirst()
         : nullptr;
-    if (!window || !window->isShown() || !window->isOnCurrentDesktop()) {
+    if (!window || !window->isShown() || !window->isOnCurrentDesktop() || leafWindowOccluded(window)) {
         for (auto &strip : m_resizeBorder) {
             strip->hide();
         }
@@ -720,7 +749,7 @@ void Ki3Tiler::updateFocusIndicator()
     Window *window = (leaf && leaf->childCount() == 0 && !leaf->windows().isEmpty())
         ? leaf->windows().constFirst()
         : nullptr;
-    if (!window || !window->isShown() || !window->isOnCurrentDesktop()) {
+    if (!window || !window->isShown() || !window->isOnCurrentDesktop() || leafWindowOccluded(window)) {
         for (auto &strip : m_focusBorder) {
             strip->hide();
         }
