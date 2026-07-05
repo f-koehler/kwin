@@ -219,16 +219,47 @@ private:
     void updateResizeIndicator();
 
     /**
-     * Refresh the muted border drawn around the currently focused leaf's window:
-     * four thin strips, same mechanism and geometry as updateResizeIndicator()
-     * but shown whenever there is a focused leaf (not only in resize mode) and in
-     * a subtler colour. Deliberately shown *before* the split/resize indicators
-     * each cycle (see updateSplitIndicator()) so those draw on top of it — ki3's
-     * overlays share KWin's AboveLayer, where the most-recently-shown internal
-     * window stacks highest (its InternalWindow is (re)created on show; see
-     * qpa/window.cpp map()/unmap()).
+     * Refresh the border drawn around *every* currently visible tiled leaf:
+     * four thin strips sitting just outside its windowGeometry() (in the
+     * tile's own padding/gap, like a floating window's chrome border — see
+     * repositionTileBorder()) rather than overlapping its content. Unlike a
+     * single "current leaf" indicator, every visible leaf keeps a border all
+     * the time; only its colour changes (accent for currentLeaf(), muted
+     * otherwise) — this way the boundary line between two tiles never pops
+     * in/out on alternating sides of the gap as focus moves between them, it
+     * only recolours in place. Creates/destroys per-leaf entries in
+     * m_tileBorders as leaves gain/lose a visible window; called from
+     * updateSplitIndicator() so it stays in sync with every event that can
+     * change which leaves are visible or who is focused. Deliberately run
+     * *before* the split/resize indicators each cycle (see
+     * updateSplitIndicator()) so those draw on top — ki3's overlays share
+     * KWin's AboveLayer, where the most-recently-shown internal window stacks
+     * highest (its InternalWindow is (re)created on show; see qpa/window.cpp
+     * map()/unmap()).
      */
-    void updateFocusIndicator();
+    void updateTileBorders();
+
+    /**
+     * Recompute @p leaf's border geometry/colour/visibility (see
+     * updateTileBorders()): outward strips around its current
+     * windowGeometry(), coloured for focus, top strip skipped for a
+     * tab/stack leaf (its header already occupies that space — see
+     * refreshGroup()). No-op if @p leaf has no entry in m_tileBorders.
+     * Connected to the leaf's own windowGeometryChanged so a resize/
+     * redistribute that doesn't itself call updateSplitIndicator() (e.g. a
+     * neighbour tile being pushed by another one resizing) still keeps the
+     * border glued to its leaf.
+     */
+    void repositionTileBorder(CustomTile *leaf);
+
+    /**
+     * Slot: a bordered tile was destroyed out from under us (e.g. an output
+     * unplug tore down its tile tree). m_tileBorders is keyed by raw
+     * CustomTile* (like m_tabbed), so without this its entry would dangle.
+     * @p tile is only used as a hash key here (never dereferenced), so it is
+     * safe mid-destruction.
+     */
+    void onTileBorderDestroyed(QObject *tile);
 
     /**
      * (Re)apply the colour-scheme-derived colours to the overlay windows: the
@@ -324,6 +355,19 @@ private:
 
     /** Queue a single (coalesced) pruneEmptyDesktops after the current event. */
     void schedulePrune();
+
+    /**
+     * Queue a single (coalesced) updateSplitIndicator() (which includes
+     * updateTileBorders()) for the next event loop turn. Any window's real
+     * geometry committing can flip another leaf's occlusion state (see
+     * handleWindowAdded()), but frameGeometryChanged can fire from deep inside
+     * KWin's Wayland surface-commit transaction machinery -- recreating or
+     * repositioning ki3's own internal overlay windows *synchronously* from
+     * there is unsafe (crashes; see the 2026-07-05 PLAN entry "tile borders
+     * stuck invisible after a fresh split"), so the actual recheck is always
+     * deferred to a fresh event via Qt::QueuedConnection.
+     */
+    void scheduleBorderRecheck();
 
     /**
      * Give each output a distinct starting desktop (output i -> desktop i+1) so
@@ -429,10 +473,11 @@ private:
     void repositionFloatChrome(Window *window);
 
     /**
-     * Show/hide @p window's resize-strip border to match focus, like a tiled
-     * window's focus indicator (updateFocusIndicator()): visible in the same
-     * m_focusBorderColor when @p window is the active window, hidden
-     * otherwise. Called on activation changes and colour-scheme updates; see
+     * Recolour @p window's resize-strip border to match focus, like a tiled
+     * leaf's border (updateTileBorders()): m_focusBorderColor when @p window
+     * is the active window, hidden otherwise (a floating window has no muted
+     * unfocused border — i3/sway show none at all until it is focused).
+     * Called on activation changes and colour-scheme updates; see
      * applyIndicatorColors().
      */
     void updateFloatChromeBorder(Window *window);
@@ -513,6 +558,9 @@ private:
     // Coalesces pruneEmptyDesktops calls after window removal / workspace switch.
     bool m_prunePending = false;
 
+    // Coalesces scheduleBorderRecheck() calls after any window's geometry commits.
+    bool m_borderRecheckPending = false;
+
     // Compositor-drawn hint on the trailing edge of the current leaf, showing
     // where the next tiled window will land. A plain internal QRasterWindow
     // (Ki3SolidOverlay): renders through KWin's internal QPA backing store with
@@ -534,19 +582,35 @@ private:
     // The leaf m_resizeBorder is currently tracking; see m_splitIndicatorLeaf.
     QPointer<CustomTile> m_resizeIndicatorLeaf;
 
-    // Muted border around the currently focused leaf's window: top, bottom,
-    // left, right strips, same Ki3SolidOverlay mechanism as m_resizeBorder, but
-    // always shown for the focused window and kept below the split/resize
-    // indicators (see updateFocusIndicator()).
-    std::array<std::unique_ptr<Ki3SolidOverlay>, 4> m_focusBorder;
+    /**
+     * ki3's own border chrome for one tiled leaf: outward top/bottom/left/
+     * right strips around its windowGeometry(), kept below the split/resize
+     * indicators (see updateTileBorders()).
+     */
+    struct TileBorder
+    {
+        std::array<std::shared_ptr<Ki3SolidOverlay>, 4> strips;
+        // Tracks the leaf's own geometry; see repositionTileBorder().
+        QMetaObject::Connection geometryConn;
+    };
 
-    // The leaf m_focusBorder is currently tracking; see m_splitIndicatorLeaf.
-    QPointer<CustomTile> m_focusIndicatorLeaf;
+    // Border chrome for every currently visible tiled leaf (see
+    // updateTileBorders()). Keyed by raw CustomTile* like m_tabbed;
+    // onTileBorderDestroyed() drops the entry the instant its tile is
+    // destroyed so the key never dangles.
+    QHash<CustomTile *, TileBorder> m_tileBorders;
 
-    // Cached copy of the colour applyIndicatorColors() computes for
-    // m_focusBorder, reused for a focused floating window's chrome border
-    // (see updateFloatChromeBorder()) so both borders always match.
+    // Cached copy of the colour applyIndicatorColors() computes for the
+    // *focused* leaf's border, reused for a focused floating window's chrome
+    // border (see updateFloatChromeBorder()) so both borders always match.
     QColor m_focusBorderColor;
+
+    // Cached copy of the colour applyIndicatorColors() computes for every
+    // *unfocused* leaf's border (see m_tileBorders) — a muted sibling of
+    // m_focusBorderColor so the boundary between tiles stays visible even
+    // when neither side has focus, preventing the accent border from simply
+    // popping in/out as focus moves (see updateTileBorders()).
+    QColor m_unfocusedBorderColor;
 
     // Watches kdeglobals so applyIndicatorColors() re-reads the scheme when the
     // user switches colour scheme, keeping the overlays' accents live (matching

@@ -64,6 +64,24 @@ static std::array<RectF, 4> borderStrips(const RectF &geom)
     };
 }
 
+// Same as borderStrips(), but the four strips sit just *outside* @p geom (in
+// the tile's own padding/gap, like a floating window's chrome border — see
+// repositionFloatChrome()) instead of overlapping its content. Top/bottom
+// extend the full outward width (including both side thicknesses) so all
+// four strips still meet cleanly at the corners, same as borderStrips()'s
+// inward overlap does.
+static std::array<RectF, 4> outwardBorderStrips(const RectF &geom)
+{
+    return {
+        RectF(geom.left() - kIndicatorThickness, geom.top() - kIndicatorThickness,
+              geom.width() + 2 * kIndicatorThickness, kIndicatorThickness),
+        RectF(geom.left() - kIndicatorThickness, geom.bottom(),
+              geom.width() + 2 * kIndicatorThickness, kIndicatorThickness),
+        RectF(geom.left() - kIndicatorThickness, geom.top(), kIndicatorThickness, geom.height()),
+        RectF(geom.right(), geom.top(), kIndicatorThickness, geom.height()),
+    };
+}
+
 // True if some ordinary window stacked above @p window overlaps its frame — e.g.
 // a modal dialog (a gpg pinentry) raised over its tiled parent. The leaf-edge
 // overlays (focus/split/resize) live in KWin's AboveLayer and would otherwise
@@ -112,9 +130,6 @@ Ki3Tiler::Ki3Tiler()
     m_nonTileableRules = loadNonTileableRules();
 
     for (auto &strip : m_resizeBorder) {
-        strip = std::make_unique<Ki3SolidOverlay>();
-    }
-    for (auto &strip : m_focusBorder) {
         strip = std::make_unique<Ki3SolidOverlay>();
     }
 
@@ -584,6 +599,20 @@ CustomTile *Ki3Tiler::firstLeaf(RootTile *root)
 
 void Ki3Tiler::handleWindowAdded(Window *window)
 {
+    // Any window's real geometry settling can flip another leaf's occlusion
+    // state (leafWindowOccluded() walks the whole stacking order, not just
+    // managed windows), and window->frameGeometry() often still reflects the
+    // *old* rect for one more round-trip after a fresh split/insert already
+    // reassigned its tile -- see the 2026-07-05 PLAN entry "tile borders stuck
+    // invisible after a fresh split". Recheck borders whenever any window's
+    // geometry actually commits, not only on ki3's own explicit resync calls;
+    // deferred (see scheduleBorderRecheck()) since this signal can fire from
+    // inside a Wayland surface-commit transaction, where synchronously
+    // touching ki3's own overlay windows crashes. Qt::UniqueConnection guards
+    // the harmless case of this firing twice for the same window.
+    connect(window, &Window::frameGeometryChanged, this, &Ki3Tiler::scheduleBorderRecheck,
+            Qt::UniqueConnection);
+
     if (m_leafForWindow.contains(window)) {
         return;
     }
@@ -658,22 +687,39 @@ void Ki3Tiler::applyIndicatorColors()
         strip->setColor(resizeColor);
     }
 
-    // Focus border: a dimmed sibling of the split indicator's highlight, mixed
-    // halfway toward the window background so it stays clearly distinct from the
-    // full-strength highlight the split strip draws on top of it (the scheme's
-    // FocusColor role can equal the selection colour, hiding the split strip).
+    // Focused tile border: a dimmed sibling of the split indicator's highlight,
+    // mixed halfway toward the window background so it stays clearly distinct
+    // from the full-strength highlight the split strip draws on top of it (the
+    // scheme's FocusColor role can equal the selection colour, hiding the
+    // split strip).
     const QColor windowBg = KColorScheme(QPalette::Active, KColorScheme::View)
                                 .background(KColorScheme::NormalBackground)
                                 .color();
-    const QColor focusColor = mixColors(highlight, windowBg, 0.5);
-    for (auto &strip : m_focusBorder) {
-        strip->setColor(focusColor);
-    }
+    m_focusBorderColor = mixColors(highlight, windowBg, 0.5);
+
+    // Unfocused tile border: the scheme's inactive-text foreground — a subtle
+    // tint that keeps the boundary between tiles visible even when neither
+    // side has focus, without competing with the accent colour above.
+    m_unfocusedBorderColor = KColorScheme(QPalette::Active, KColorScheme::View)
+                                 .foreground(KColorScheme::InactiveText)
+                                 .color();
 
     // Reused for a focused floating window's chrome border, so both borders
     // track a colour-scheme switch together.
-    m_focusBorderColor = focusColor;
+    updateTileBorders();
     updateAllFloatChromeBorders();
+}
+
+void Ki3Tiler::scheduleBorderRecheck()
+{
+    if (m_borderRecheckPending) {
+        return;
+    }
+    m_borderRecheckPending = true;
+    QMetaObject::invokeMethod(this, [this]() {
+        m_borderRecheckPending = false;
+        updateSplitIndicator();
+    }, Qt::QueuedConnection);
 }
 
 void Ki3Tiler::updateSplitIndicator()
@@ -683,11 +729,11 @@ void Ki3Tiler::updateSplitIndicator()
     // the current leaf disappears, e.g. the last window on a desktop closing
     // while resize mode is active.
     //
-    // Order matters for stacking: the focus border must be (re)shown *before* the
+    // Order matters for stacking: tile borders must be (re)shown *before* the
     // resize border and the split indicator so those two internal windows are
-    // created after it and therefore stack above it in AboveLayer (see
-    // updateFocusIndicator()).
-    updateFocusIndicator();
+    // created after them and therefore stack above them in AboveLayer (see
+    // updateTileBorders()).
+    updateTileBorders();
     updateResizeIndicator();
 
     CustomTile *leaf = currentLeaf();
@@ -755,44 +801,113 @@ void Ki3Tiler::updateResizeIndicator()
     }
 }
 
-void Ki3Tiler::updateFocusIndicator()
+void Ki3Tiler::updateTileBorders()
 {
-    CustomTile *leaf = currentLeaf();
-
-    if (m_focusIndicatorLeaf != leaf) {
-        if (m_focusIndicatorLeaf) {
-            disconnect(m_focusIndicatorLeaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::updateFocusIndicator);
-        }
-        m_focusIndicatorLeaf = leaf;
-        if (leaf) {
-            connect(leaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::updateFocusIndicator);
+    // Every leaf currently showing a real tiled window gets a border -- unlike
+    // a single "current leaf only" indicator, so the boundary line between two
+    // tiles stays put and only *changes colour* as focus moves between them,
+    // instead of popping in/out on alternating sides of the gap.
+    QSet<CustomTile *> liveLeaves;
+    for (auto it = m_leafForWindow.constBegin(); it != m_leafForWindow.constEnd(); ++it) {
+        if (CustomTile *leaf = it.value()) {
+            liveLeaves.insert(leaf);
         }
     }
 
-    // Same visibility rule as the split/resize indicators: only a leaf with a
-    // presently-shown window on the current desktop has anything to outline.
-    Window *window = (leaf && leaf->childCount() == 0 && !leaf->windows().isEmpty())
-        ? leaf->windows().constFirst()
-        : nullptr;
-    if (!window || !window->isShown() || !window->isOnCurrentDesktop() || leafWindowOccluded(window)) {
-        for (auto &strip : m_focusBorder) {
-            strip->hide();
+    // i3-style "smart borders": a lone tile filling its whole output/desktop
+    // has no neighbour to delimit, so only draw borders where more than one
+    // leaf shares a root. Counted across every live leaf regardless of its
+    // own shown/occlusion state below -- a root's leaves are always all on
+    // the same (single) desktop, so this is just "how many tiles does this
+    // output/desktop have", independent of transient per-window occlusion.
+    QHash<Tile *, int> leafCountByRoot;
+    for (CustomTile *leaf : std::as_const(liveLeaves)) {
+        ++leafCountByRoot[leaf->rootTile()];
+    }
+
+    for (CustomTile *leaf : std::as_const(liveLeaves)) {
+        // Same visibility rule as the split/resize indicators: only a leaf
+        // with a presently-shown, unoccluded window on the current desktop
+        // has anything to outline.
+        Window *window = (leaf->childCount() == 0 && !leaf->windows().isEmpty())
+            ? leaf->windows().constFirst()
+            : nullptr;
+        const bool visible = window && window->isShown() && window->isOnCurrentDesktop()
+            && !leafWindowOccluded(window) && leafCountByRoot.value(leaf->rootTile()) > 1;
+        if (!visible) {
+            if (auto it = m_tileBorders.find(leaf); it != m_tileBorders.end()) {
+                disconnect(it->geometryConn);
+                m_tileBorders.erase(it);
+            }
+            continue;
         }
+
+        if (!m_tileBorders.contains(leaf)) {
+            TileBorder border;
+            for (auto &strip : border.strips) {
+                strip = std::make_shared<Ki3SolidOverlay>();
+            }
+            // A resize/redistribute that doesn't itself route through
+            // updateSplitIndicator() (e.g. a neighbour tile being pushed by
+            // another one resizing) still needs to keep the border glued to
+            // its leaf.
+            border.geometryConn = connect(leaf, &Tile::windowGeometryChanged, this,
+                                          [this, leaf] {
+                repositionTileBorder(leaf);
+            });
+            m_tileBorders.insert(leaf, std::move(border));
+            // Drop the entry the instant the tile is destroyed (e.g. an
+            // output unplug tears down its tile tree) so the raw-pointer key
+            // never dangles; see onGroupTileDestroyed() for the same pattern.
+            connect(leaf, &QObject::destroyed, this, &Ki3Tiler::onTileBorderDestroyed,
+                    Qt::UniqueConnection);
+        }
+        repositionTileBorder(leaf);
+    }
+
+    // Drop borders for leaves no longer live at all (window removed, floated
+    // away, or the tile's own tree torn down); everything else not currently
+    // visible was already handled inside the loop above.
+    for (auto it = m_tileBorders.begin(); it != m_tileBorders.end();) {
+        if (!liveLeaves.contains(it.key())) {
+            disconnect(it->geometryConn);
+            it = m_tileBorders.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void Ki3Tiler::repositionTileBorder(CustomTile *leaf)
+{
+    auto it = m_tileBorders.find(leaf);
+    if (it == m_tileBorders.end()) {
         return;
     }
+    TileBorder &border = it.value();
 
-    const auto strips = borderStrips(leaf->windowGeometry());
+    const auto strips = outwardBorderStrips(leaf->windowGeometry());
     // A tab/stack group already has its own header showing the title right
     // above windowGeometry() (see refreshGroup()); the top strip there would
     // just be redundant wasted space, so skip it for grouped leaves only.
     const bool skipTop = m_tabbed.contains(leaf);
+    const QColor &color = (leaf == currentLeaf()) ? m_focusBorderColor : m_unfocusedBorderColor;
     for (int i = 0; i < 4; ++i) {
         if (i == 0 && skipTop) {
-            m_focusBorder[i]->hide();
+            border.strips[i]->hide();
             continue;
         }
-        m_focusBorder[i]->setGeometry(strips[i].toRect());
-        m_focusBorder[i]->show();
+        border.strips[i]->setColor(color);
+        border.strips[i]->setGeometry(strips[i].toRect());
+        border.strips[i]->show();
+    }
+}
+
+void Ki3Tiler::onTileBorderDestroyed(QObject *tile)
+{
+    // The tile is mid-destruction; use it as a bare key only (no dereference).
+    if (m_tileBorders.remove(static_cast<CustomTile *>(tile)) > 0) {
+        qCDebug(KWIN_KI3) << "tile border: owning tile destroyed; dropped stale entry";
     }
 }
 

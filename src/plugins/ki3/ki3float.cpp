@@ -157,9 +157,9 @@ void Ki3Tiler::updateFloatChromeBorder(Window *window)
         return;
     }
 
-    // i3/sway: an unfocused floating window shows no border at all, matching
-    // a tiled window's focus indicator (updateFocusIndicator()), which is
-    // likewise only ever shown around the focused leaf.
+    // i3/sway: an unfocused floating window shows no border at all -- unlike
+    // a tiled leaf's border (updateTileBorders()), which stays visible (just
+    // muted) even unfocused so the tile grid's boundaries don't disappear.
     const bool focused = window == workspace()->activeWindow();
     for (auto &strip : chrome.resizeStrips) {
         strip->setColor(m_focusBorderColor);
