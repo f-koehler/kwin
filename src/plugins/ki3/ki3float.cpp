@@ -27,6 +27,7 @@ void Ki3Tiler::toggleFloating()
         // Re-tile it.
         m_floatingWindows.remove(window);
         destroyFloatChrome(window);
+        window->setKeepAbove(false);
         qCDebug(KWIN_KI3) << "unfloat" << window->caption();
         insertWindow(window);
     } else if (m_leafForWindow.contains(window)) {
@@ -36,6 +37,10 @@ void Ki3Tiler::toggleFloating()
         forgetWindow(window); // restores noBorder(false); createFloatChrome() below re-hides it
         window->requestTile(nullptr);
         window->setNoBorder(true); // ki3 draws its own title bar instead of the native SSD
+        // i3/sway: floating windows always stay above tiled ones, even across
+        // focus changes -- KWin's default focus-follows-raise would otherwise
+        // sink this behind a tiled window the user clicks on next.
+        window->setKeepAbove(true);
         createFloatChrome(window);
     }
 }
@@ -82,7 +87,7 @@ void Ki3Tiler::createFloatChrome(Window *window)
     });
 
     m_floatChrome.insert(window, chrome);
-    repositionFloatChrome(window);
+    repositionFloatChrome(window); // also sets the border's initial focus state
     qCDebug(KWIN_KI3) << "float chrome created for" << window->caption();
 }
 
@@ -131,7 +136,41 @@ void Ki3Tiler::repositionFloatChrome(Window *window)
     };
     for (int i = 0; i < 3; ++i) {
         chrome.resizeStrips[i]->setGeometry(strips[i].toRect());
-        chrome.resizeStrips[i]->show();
+    }
+    // Visibility (not just geometry) depends on focus -- see
+    // updateFloatChromeBorder() -- so it decides show()/hide() for the strips
+    // instead of this unconditionally showing them.
+    updateFloatChromeBorder(window);
+}
+
+void Ki3Tiler::updateFloatChromeBorder(Window *window)
+{
+    auto it = m_floatChrome.find(window);
+    if (it == m_floatChrome.end()) {
+        return;
+    }
+    FloatChrome &chrome = it.value();
+
+    // repositionFloatChrome() already hides everything while the window isn't
+    // visible on the current desktop; don't fight that here.
+    if (!window->isShown() || !window->isOnCurrentDesktop()) {
+        return;
+    }
+
+    // i3/sway: an unfocused floating window shows no border at all, matching
+    // a tiled window's focus indicator (updateFocusIndicator()), which is
+    // likewise only ever shown around the focused leaf.
+    const bool focused = window == workspace()->activeWindow();
+    for (auto &strip : chrome.resizeStrips) {
+        strip->setColor(m_focusBorderColor);
+        strip->setVisible(focused);
+    }
+}
+
+void Ki3Tiler::updateAllFloatChromeBorders()
+{
+    for (auto it = m_floatChrome.constBegin(); it != m_floatChrome.constEnd(); ++it) {
+        updateFloatChromeBorder(it.key());
     }
 }
 
