@@ -551,9 +551,9 @@ bool Ki3Tiler::shouldManage(Window *window) const
         && !m_floatingWindows.contains(window);
 }
 
-RootTile *Ki3Tiler::rootForWindow(Window *window) const
+RootTile *Ki3Tiler::rootForWindow(Window *window, LogicalOutput *outputHint) const
 {
-    LogicalOutput *output = window->output();
+    LogicalOutput *output = outputHint ? outputHint : window->output();
     if (!output) {
         return nullptr;
     }
@@ -1384,9 +1384,26 @@ void Ki3Tiler::handleWindowActivated(Window *window)
     updateAllFloatChromeBorders();
 }
 
-void Ki3Tiler::insertWindow(Window *window)
+void Ki3Tiler::attachWindow(Window *window, CustomTile *leaf)
 {
-    RootTile *root = rootForWindow(window);
+    leaf->manage(window);
+    // Tile::manage() wires geometry (window->requestTile) only when the leaf's
+    // desktop is currently shown on its output; onto a hidden destination it
+    // skips it -- and for a window it evacuated from another tile it actively
+    // clears the tile (tile.cpp:444-448). That path is hit routinely by a
+    // cross-output move onto a background workspace, leaving the window untiled
+    // (overlapping at its raw geometry) even once the desktop is shown. Re-request
+    // the tile explicitly so the association survives; a no-op when manage()
+    // already set it (active desktop) or if the window isn't actually managed.
+    if (!window->isDeleted() && leaf->windows().contains(window)
+        && window->requestedTile() != leaf) {
+        window->requestTile(leaf);
+    }
+}
+
+void Ki3Tiler::insertWindow(Window *window, LogicalOutput *outputHint)
+{
+    RootTile *root = rootForWindow(window, outputHint);
     if (!root) {
         qCWarning(KWIN_KI3) << "no root tile for" << window;
         return;
@@ -1395,7 +1412,7 @@ void Ki3Tiler::insertWindow(Window *window)
 
     // First window on this root fills it.
     if (root->childCount() == 0 && root->windows().isEmpty()) {
-        root->manage(window);
+        attachWindow(window, root);
         m_leafForWindow[window] = root;
         m_lastFocusedLeaf = root;
         window->setNoBorder(true); // i3-style: tiled windows never show their own title bar
@@ -1421,7 +1438,7 @@ void Ki3Tiler::placeWindowAt(Window *window, CustomTile *target, bool insertBefo
     // If the chosen container is a tab/stack group, the window joins it as a
     // new tab rather than splitting the tree.
     if (auto it = m_tabbed.find(target); it != m_tabbed.end()) {
-        target->manage(window);
+        attachWindow(window, target);
         it->windows.append(window);
         it->active = it->windows.size() - 1;
         m_leafForWindow[window] = target;
@@ -1443,7 +1460,7 @@ void Ki3Tiler::placeWindowAt(Window *window, CustomTile *target, bool insertBefo
         const int position = insertBefore ? target->row() : target->row() + 1;
         CustomTile *forNew = parent->createChildAt(target->relativeGeometry(),
                                                    m_splitDirection, position);
-        forNew->manage(window);
+        attachWindow(window, forNew);
         m_leafForWindow[window] = forNew;
         m_lastFocusedLeaf = forNew;
         window->setNoBorder(true);
@@ -1464,7 +1481,7 @@ void Ki3Tiler::placeWindowAt(Window *window, CustomTile *target, bool insertBefo
     const QList<CustomTile *> created = target->split(m_splitDirection);
     if (created.size() != 2) {
         qCWarning(KWIN_KI3) << "unexpected split result, size" << created.size();
-        target->manage(window);
+        attachWindow(window, target);
         m_leafForWindow[window] = target;
         m_lastFocusedLeaf = target;
         window->setNoBorder(true);
@@ -1479,12 +1496,12 @@ void Ki3Tiler::placeWindowAt(Window *window, CustomTile *target, bool insertBefo
     // first child so every window stays on a leaf.
     if (forOld != target) {
         for (Window *w : existing) {
-            forOld->manage(w);
+            attachWindow(w, forOld);
             m_leafForWindow[w] = forOld;
         }
     }
 
-    forNew->manage(window);
+    attachWindow(window, forNew);
     m_leafForWindow[window] = forNew;
     m_lastFocusedLeaf = forNew;
     window->setNoBorder(true);

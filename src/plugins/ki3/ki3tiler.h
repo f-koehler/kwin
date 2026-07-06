@@ -88,6 +88,17 @@ public Q_SLOTS:
     Q_SCRIPTABLE bool resizeModeActive() const;
 
     /**
+     * Test/introspection: one entry per window ki3 tiles, each
+     * "<output>|<desktop>|<x>,<y>,<w>,<h>" using the window's *actual* applied
+     * frame geometry (not the tile's intended rect). Lets a test assert that a
+     * window really laid out where its tile says -- e.g. that a cross-output move
+     * onto a hidden workspace didn't leave windows overlapping. The debug log
+     * only prints intended tile geometry, so this is the only ground truth for
+     * "did the geometry actually get applied".
+     */
+    Q_SCRIPTABLE QStringList tiledWindowGeometries() const;
+
+    /**
      * Test-only: hot-plug a virtual output and return its name (empty on
      * failure). No-op unless the env var KI3_TEST_HOOKS is set, so it can never
      * spawn a phantom screen in a real session. Used by the regression suite to
@@ -489,8 +500,19 @@ private:
      */
     bool leafWindowOccluded(Window *window) const;
 
-    /** Insert a manageable window into its output/desktop tile tree. */
-    void insertWindow(Window *window);
+    /**
+     * Insert a manageable window into its output/desktop tile tree.
+     *
+     * @p outputHint, when non-null, overrides window->output() for choosing the
+     * target tree. This is required right after a cross-output move
+     * (Window::sendToOutput()): on Wayland the output only updates in
+     * WaylandWindow::updateGeometry() once the client acks the configure, so
+     * window->output() still reports the *old* output synchronously here. Using
+     * the stale output would tile the window into the (old-output, target-desktop)
+     * tree — hidden, since that output shows a different desktop — until an
+     * unrelated re-home (e.g. an output unplug) rescues it. See moveActiveToWorkspace().
+     */
+    void insertWindow(Window *window, LogicalOutput *outputHint = nullptr);
 
     /**
      * Place @p window at @p target, following i3 join rules: joins a tab/stack
@@ -505,6 +527,19 @@ private:
      * visibly changes).
      */
     void placeWindowAt(Window *window, CustomTile *target, bool insertBefore = false);
+
+    /**
+     * Add @p window to @p leaf and make the tile association stick even when
+     * @p leaf's desktop is not the one currently shown on its output.
+     * Tile::manage() only calls window->requestTile() when the tile isActive()
+     * (its desktop is current) and otherwise clears an evacuated window's tile
+     * (tile.cpp:444) -- so tiling onto a hidden destination (e.g. a window moved
+     * across outputs onto a background workspace) would apply no geometry and
+     * the window would overlap at its raw position, before *and* after that
+     * desktop is next shown. Re-requesting explicitly is idempotent when
+     * manage() already did it. Use this everywhere ki3 tiles a window.
+     */
+    void attachWindow(Window *window, CustomTile *leaf);
 
     /** Detach a window and collapse the tile it leaves behind. */
     void forgetWindow(Window *window);
@@ -537,8 +572,12 @@ private:
     /** updateFloatChromeBorder() for every floating window with chrome. */
     void updateAllFloatChromeBorders();
 
-    /** Root tile for the window's output and (current) desktop, or nullptr. */
-    RootTile *rootForWindow(Window *window) const;
+    /**
+     * Root tile for the window's output and (current) desktop, or nullptr.
+     * @p outputHint overrides window->output() when it is known to be stale
+     * (see insertWindow()).
+     */
+    RootTile *rootForWindow(Window *window, LogicalOutput *outputHint = nullptr) const;
 
     /**
      * Clear KWin's default tile layout for @p root so ki3 owns the tree.

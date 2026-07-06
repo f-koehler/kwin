@@ -19,6 +19,7 @@
 #include "window.h"
 #include "workspace.h"
 
+#include <QRectF>
 #include <QSize>
 #include <QStringList>
 
@@ -100,6 +101,33 @@ QList<int> Ki3Tiler::desktopNumbersForOutput(const QString &outputName) const
         }
     }
     return numbers;
+}
+
+QStringList Ki3Tiler::tiledWindowGeometries() const
+{
+    QStringList out;
+    for (auto it = m_leafForWindow.constBegin(); it != m_leafForWindow.constEnd(); ++it) {
+        Window *window = it.key();
+        if (!window || window->isDeleted() || !it.value()) {
+            continue;
+        }
+        const QString outputName = window->output() ? window->output()->name() : QStringLiteral("?");
+        int desktop = 0;
+        if (!window->desktops().isEmpty()) {
+            bool ok;
+            const int n = window->desktops().constFirst()->name().toInt(&ok);
+            desktop = ok ? n : 0;
+        }
+        const QRectF g = window->frameGeometry();
+        out << QStringLiteral("%1|%2|%3,%4,%5,%6")
+                   .arg(outputName)
+                   .arg(desktop)
+                   .arg(int(g.x()))
+                   .arg(int(g.y()))
+                   .arg(int(g.width()))
+                   .arg(int(g.height()));
+    }
+    return out;
 }
 
 QString Ki3Tiler::dbusAddTestOutput()
@@ -550,7 +578,14 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
     if (floating) {
         repositionFloatChrome(window); // hide/reposition chrome for its new desktop
     } else {
-        insertWindow(window);
+        // Pass `home` explicitly: sendToOutput() above updates window->output()
+        // only once the Wayland client acks the configure, so it can still report
+        // the *old* output here. Without the hint the window would tile into the
+        // (old-output, target-desktop) tree — hidden on that output — until an
+        // unrelated re-home surfaced it. `home` may be null (target desktop has no
+        // home yet); then insertWindow falls back to window->output(), which is
+        // correct because no cross-output move happened.
+        insertWindow(window, home);
     }
     schedulePrune(); // the source desktop may now be empty
     // The target desktop just gained a home output (or the source lost one); the
