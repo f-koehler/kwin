@@ -11,12 +11,15 @@
 #include "ki3tiler.h"
 
 #include "core/output.h"
+#include "core/outputbackend.h"
+#include "main.h"
 #include "tiles/customtile.h"
 #include "tiles/tilemanager.h"
 #include "virtualdesktops.h"
 #include "window.h"
 #include "workspace.h"
 
+#include <QSize>
 #include <QStringList>
 
 namespace KWin
@@ -97,6 +100,41 @@ QList<int> Ki3Tiler::desktopNumbersForOutput(const QString &outputName) const
         }
     }
     return numbers;
+}
+
+QString Ki3Tiler::dbusAddTestOutput()
+{
+    if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
+        return QString();
+    }
+    const QString name = QStringLiteral("KI3-VIRT-%1").arg(m_testOutputSeq++);
+    BackendOutput *out = kwinApp()->outputBackend()->createVirtualOutput(
+        name, name, QSize(1280, 800), 1.0);
+    if (!out) {
+        qCWarning(KWIN_KI3) << "dbusAddTestOutput: backend refused" << name;
+        return QString();
+    }
+    m_testOutputs.append(out);
+    qCDebug(KWIN_KI3) << "test hotplug: added output" << name;
+    return name;
+}
+
+QString Ki3Tiler::dbusRemoveTestOutput()
+{
+    if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
+        return QString();
+    }
+    // Drop any that vanished by another route, then unplug the newest survivor.
+    while (!m_testOutputs.isEmpty() && !m_testOutputs.last()) {
+        m_testOutputs.removeLast();
+    }
+    if (m_testOutputs.isEmpty()) {
+        return QString();
+    }
+    BackendOutput *out = m_testOutputs.takeLast();
+    kwinApp()->outputBackend()->removeVirtualOutput(out);
+    qCDebug(KWIN_KI3) << "test hotplug: removed an output";
+    return QStringLiteral("removed");
 }
 
 void Ki3Tiler::dbusSwitchToWorkspace(int number)
