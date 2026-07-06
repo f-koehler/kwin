@@ -222,6 +222,18 @@ private:
      */
     void onGroupTileDestroyed(QObject *tile);
 
+    /**
+     * Slot: a root tile ki3 had taken over (see ensureManaged) was destroyed.
+     * This fires not only on output unplug but on every desktop *prune* — each
+     * TileManager deletes its per-desktop RootTile on VirtualDesktop removal
+     * (tilemanager.cpp) — which purgeStaleRoots() (output-change-only) would
+     * miss. m_managedRoots is keyed by raw RootTile*, so a freed address can be
+     * recycled by a fresh RootTile and wrongly look "already managed", making
+     * ensureManaged() skip clearing KWin's default layout. Drop the entry the
+     * instant its root dies. @p tile is a bare key here (never dereferenced).
+     */
+    void onManagedRootDestroyed(QObject *tile);
+
     /** Activate the tab at @p index within @p tile (from a header click). */
     void activateTab(CustomTile *tile, int index);
 

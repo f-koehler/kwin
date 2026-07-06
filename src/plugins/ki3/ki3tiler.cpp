@@ -573,6 +573,12 @@ void Ki3Tiler::ensureManaged(RootTile *root)
         return;
     }
     m_managedRoots.insert(root);
+    // Keyed by raw pointer; a root dies on output unplug AND on desktop prune
+    // (TileManager deletes its per-desktop RootTile). Drop the entry the moment
+    // it's destroyed so a recycled address can't masquerade as already-managed
+    // (which would skip the default-layout teardown below). See the slot's doc.
+    connect(root, &QObject::destroyed, this, &Ki3Tiler::onManagedRootDestroyed,
+            Qt::UniqueConnection);
 
     // KWin seeds new roots with a default 3-column layout (see
     // TileManager::readSettings). Tear it down so ki3 starts from an empty

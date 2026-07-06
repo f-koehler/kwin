@@ -322,6 +322,14 @@ void Ki3Tiler::onGroupTileDestroyed(QObject *tile)
     }
 }
 
+void Ki3Tiler::onManagedRootDestroyed(QObject *tile)
+{
+    // Bare key only (mid-destruction); never dereferenced. See the header doc.
+    if (m_managedRoots.remove(static_cast<RootTile *>(tile)) > 0) {
+        qCDebug(KWIN_KI3) << "managed root destroyed; dropped stale entry";
+    }
+}
+
 void Ki3Tiler::activateTab(CustomTile *tile, int index)
 {
     auto it = m_tabbed.find(tile);
