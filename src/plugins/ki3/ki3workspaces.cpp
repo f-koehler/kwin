@@ -68,6 +68,37 @@ QList<int> Ki3Tiler::liveDesktopNumbers() const
     return numbers; // already in insertion order, which we keep sorted
 }
 
+QList<int> Ki3Tiler::desktopNumbersForOutput(const QString &outputName) const
+{
+    LogicalOutput *target = nullptr;
+    for (LogicalOutput *output : workspace()->outputs()) {
+        if (output->name() == outputName) {
+            target = output;
+            break;
+        }
+    }
+    if (!target) {
+        return {};
+    }
+
+    VirtualDesktop *current = VirtualDesktopManager::self()->currentDesktop(target);
+    QList<int> numbers;
+    for (VirtualDesktop *desktop : VirtualDesktopManager::self()->desktops()) {
+        bool ok;
+        const int n = desktop->name().toInt(&ok);
+        if (!ok) {
+            continue;
+        }
+        // Per-output workspace set: the desktop shown here, plus any desktop whose
+        // windows physically live on this output (its home). By ki3's one-desktop-
+        // per-screen invariant these never collide with another output's set.
+        if (desktop == current || outputForDesktop(desktop) == target) {
+            numbers.append(n);
+        }
+    }
+    return numbers;
+}
+
 void Ki3Tiler::dbusSwitchToWorkspace(int number)
 {
     switchToWorkspace(number);
@@ -471,6 +502,10 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
         insertWindow(window);
     }
     schedulePrune(); // the source desktop may now be empty
+    // The target desktop just gained a home output (or the source lost one); the
+    // pager's per-output list keys off that, but this changed neither the current
+    // desktop nor the desktop count, so nothing else emits desktopsChanged().
+    Q_EMIT desktopsChanged();
 }
 
 } // namespace KWin

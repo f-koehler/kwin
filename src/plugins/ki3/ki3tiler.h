@@ -68,6 +68,14 @@ public Q_SLOTS:
     /** Workspace numbers (parsed from desktop names) of all currently live desktops, in order. */
     Q_SCRIPTABLE QList<int> liveDesktopNumbers() const;
 
+    /**
+     * Workspace numbers that "belong" to @p outputName, in order: the desktops
+     * whose windows live on that output (their home output) plus the desktop
+     * currently shown there. This is the i3/sway per-output workspace set — the
+     * pager on each screen shows only these, never every output's desktops.
+     */
+    Q_SCRIPTABLE QList<int> desktopNumbersForOutput(const QString &outputName) const;
+
     /** D-Bus wrapper for switchToWorkspace(), for the ki3-pager plasmoid. */
     Q_SCRIPTABLE void dbusSwitchToWorkspace(int number);
 
