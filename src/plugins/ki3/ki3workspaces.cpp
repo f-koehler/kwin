@@ -408,13 +408,26 @@ void Ki3Tiler::enforceUniqueDesktops()
     const auto outputs = workspace()->outputs();
     for (int i = 0; i < outputs.size(); ++i) {
         VirtualDesktop *desktop = vdm->currentDesktop(outputs[i]);
-        bool duplicate = (desktop == nullptr);
-        for (int j = 0; j < i && !duplicate; ++j) {
+        bool reassign = (desktop == nullptr);
+        // (a) The same desktop is already current on an earlier output -> KWin
+        // duplicated it (initialDesktopForNewOutput defaults a new screen to 1).
+        for (int j = 0; j < i && !reassign; ++j) {
             if (vdm->currentDesktop(outputs[j]) == desktop) {
-                duplicate = true;
+                reassign = true;
             }
         }
-        if (!duplicate) {
+        // (b) This desktop's windows physically live on a *different* live output
+        // (their home). Showing it here would be split-brain: an empty view on
+        // this screen while those windows stay hidden on the other. A freshly
+        // plugged output landing on a hidden-but-occupied desktop hits this even
+        // though it isn't a literal duplicate of any current desktop.
+        if (!reassign && desktop) {
+            LogicalOutput *home = outputForDesktop(desktop);
+            if (home && home != outputs[i]) {
+                reassign = true;
+            }
+        }
+        if (!reassign) {
             continue;
         }
         VirtualDesktop *free = firstFreeDesktop();
