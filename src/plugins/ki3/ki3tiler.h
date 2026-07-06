@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "core/backendoutput.h"
 #include "ki3header.h"
 #include "ki3rules.h"
 #include "plugin.h"
@@ -25,6 +26,7 @@
 namespace KWin
 {
 
+class BackendOutput;
 class CustomTile;
 class Ki3SolidOverlay;
 class LogicalOutput;
@@ -84,6 +86,18 @@ public Q_SLOTS:
 
     /** Whether Meta+R resize mode (see toggleResizeMode()) is currently active. */
     Q_SCRIPTABLE bool resizeModeActive() const;
+
+    /**
+     * Test-only: hot-plug a virtual output and return its name (empty on
+     * failure). No-op unless the env var KI3_TEST_HOOKS is set, so it can never
+     * spawn a phantom screen in a real session. Used by the regression suite to
+     * exercise output plug/unplug (createVirtualOutput → Workspace::outputAdded,
+     * the same path a real monitor takes). See tests/harness.py `hotplug`.
+     */
+    Q_SCRIPTABLE QString dbusAddTestOutput();
+
+    /** Test-only counterpart: unplug the most recently added test output. */
+    Q_SCRIPTABLE QString dbusRemoveTestOutput();
 
 Q_SIGNALS:
     /** Emitted whenever any output's current desktop changes. */
@@ -580,6 +594,11 @@ private:
 
     // Coalesces output plug/unplug events into a single deferred reconcile.
     bool m_reconcilePending = false;
+
+    // Test-only: virtual outputs hot-plugged via dbusAddTestOutput(), newest
+    // last. QPointer so an output that vanishes another way self-clears.
+    QList<QPointer<BackendOutput>> m_testOutputs;
+    int m_testOutputSeq = 0;
 
     // Coalesces pruneEmptyDesktops calls after window removal / workspace switch.
     bool m_prunePending = false;
