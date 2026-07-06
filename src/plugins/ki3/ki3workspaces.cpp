@@ -573,7 +573,7 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
     if (home && home != window->output()) {
         window->sendToOutput(home);
     }
-    qCDebug(KWIN_KI3) << "move" << (floating ? "floating " : "") << "window to workspace" << number
+    qCDebug(KWIN_KI3) << (floating ? "move floating window to workspace" : "move window to workspace") << number
                       << "on output" << (void *)window->output();
     if (floating) {
         repositionFloatChrome(window); // hide/reposition chrome for its new desktop
