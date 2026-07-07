@@ -151,6 +151,14 @@ Ki3Tiler::Ki3Tiler()
     connect(ws, &Workspace::outputAdded, this, &Ki3Tiler::scheduleReconcile);
     connect(ws, &Workspace::outputRemoved, this, &Ki3Tiler::scheduleReconcile);
 
+    // KWin re-syncs its active output to the active window's output on every
+    // activation (activation.cpp), and to the pointer/touch position otherwise
+    // (e.g. clicking empty desktop background) -- so this alone tracks every
+    // way focusedOutput()'s result can change, without hooking windowActivated
+    // too. Forwarded to the pager over D-Bus so it can mute the highlight on
+    // every screen except the focused one.
+    connect(ws, &Workspace::activeOutputChanged, this, &Ki3Tiler::focusedOutputChanged);
+
     // i3/sway model: each output independently shows one workspace. Unlike
     // Plasma's default (one desktop spanning all outputs), a desktop number here
     // exists on exactly one screen, and only desktops that are either shown or

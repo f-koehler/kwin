@@ -185,6 +185,12 @@ LogicalOutput *Ki3Tiler::focusedOutput() const
     return workspace()->activeOutput();
 }
 
+QString Ki3Tiler::focusedOutputName() const
+{
+    LogicalOutput *output = focusedOutput();
+    return output ? output->name() : QString();
+}
+
 VirtualDesktop *Ki3Tiler::desktopByNumber(int n) const
 {
     if (n < 1) {
@@ -353,6 +359,15 @@ void Ki3Tiler::focusOutput(LogicalOutput *output)
         }
     }
     qCDebug(KWIN_KI3) << "focusOutput: no window to activate on" << (void *)output;
+    // i3/sway: switching to an empty workspace means nothing is focused, full
+    // stop -- the previously active window must not go on "being active" just
+    // because nothing replaced it. Without this, focusedOutput() (which prefers
+    // activeWindow()->output() over activeOutput(), see below) would keep
+    // reporting the old screen as focused, leaving the pager's focused-screen
+    // highlight stuck there instead of following us to the empty desktop.
+    if (Window *active = workspace()->activeWindow(); active && active->output() != output) {
+        workspace()->activateWindow(nullptr);
+    }
     // No window here to trigger handleWindowActivated -> refresh the
     // indicator ourselves so it doesn't linger on the previous output.
     updateSplitIndicator();
