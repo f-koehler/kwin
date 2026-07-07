@@ -90,7 +90,12 @@ bool Ki3Tiler::leafWindowOccluded(Window *window) const
     if (idx < 0) {
         return false;
     }
-    const RectF geom = window->frameGeometry();
+    // Expand by kIndicatorThickness on every side: outwardBorderStrips() draws
+    // outside the window's own frame (see above it), so a window whose edge
+    // only clips that outward margin -- not the frame itself -- must still
+    // count as occluding, or the border keeps drawing over its edge.
+    const RectF geom = window->frameGeometry().adjusted(
+        -kIndicatorThickness, -kIndicatorThickness, kIndicatorThickness, kIndicatorThickness);
     for (int i = idx + 1; i < stack.size(); ++i) {
         Window *above = stack.at(i);
         if (above->isInternal() || above->isOutline() || above->isDeleted()) {
