@@ -206,8 +206,20 @@ void Ki3Tiler::updateTabVisibility(CustomTile *tile)
     // Raise the active tab above its peers. All group windows share the tile
     // rect, so raising the active one occludes the rest (T0: visibility by
     // stacking; truly hiding inactive tabs is a later refinement).
+    //
+    // Exception: if focus is currently on a window ki3 doesn't manage (a
+    // floating dialog such as a gpg/pinentry prompt, or a user-floated
+    // window), never raise over it. handleWindowActivated() refreshes every
+    // group on each activation, so without this guard a freshly mapped
+    // pinentry dialog gets buried under this group's stale active tab the
+    // instant it steals focus.
     if (Window *active = st.windows[st.active]) {
-        workspace()->raiseWindow(active);
+        Window *globalActive = workspace()->activeWindow();
+        const bool wouldBuryFocusedDialog = globalActive && globalActive != active
+            && !m_leafForWindow.contains(globalActive);
+        if (!wouldBuryFocusedDialog) {
+            workspace()->raiseWindow(active);
+        }
     }
     qCDebug(KWIN_KI3) << "tab visibility:" << st.windows.size() << "tabs, active" << st.active;
 }
