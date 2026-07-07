@@ -78,6 +78,13 @@ public Q_SLOTS:
      */
     Q_SCRIPTABLE QList<int> desktopNumbersForOutput(const QString &outputName) const;
 
+    /**
+     * Name of the output ki3 currently considers focused (see focusedOutput()),
+     * or empty if none. Lets the ki3-pager plasmoid mute its active-desktop
+     * highlight on every screen except this one.
+     */
+    Q_SCRIPTABLE QString focusedOutputName() const;
+
     /** D-Bus wrapper for switchToWorkspace(), for the ki3-pager plasmoid. */
     Q_SCRIPTABLE void dbusSwitchToWorkspace(int number);
 
@@ -116,6 +123,9 @@ Q_SIGNALS:
 
     /** Emitted whenever resize mode is toggled on or off. */
     Q_SCRIPTABLE void resizeModeChanged();
+
+    /** Emitted whenever focusedOutputName() would return a different value. */
+    Q_SCRIPTABLE void focusedOutputChanged();
 
 private:
     void handleWindowAdded(Window *window);
