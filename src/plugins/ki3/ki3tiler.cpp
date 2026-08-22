@@ -127,6 +127,11 @@ Ki3Tiler::Ki3Tiler()
 {
     qCInfo(KWIN_KI3) << "ki3 tiling plugin loaded";
 
+    // Snapshot whatever ki3 is about to overwrite in the real kwinrc/
+    // kglobalshortcutsrc, before anything below touches either -- see
+    // ki3session.cpp and ~Ki3Tiler().
+    backupSessionStateIfNeeded();
+
     m_nonTileableRules = loadNonTileableRules();
 
     for (auto &strip : m_resizeBorder) {
@@ -210,7 +215,10 @@ void Ki3Tiler::registerShortcuts()
         action->setText(text);
         // Take the keys away from any existing owner (e.g. Meta+L = Lock Session)
         // so ki3's tiling bindings win, like a real tiling WM grabbing the keys.
+        // Captured first (if this session took a fresh SessionBackup) so
+        // restoreSessionStateOnCleanExit() can give it back later.
         for (const QKeySequence &key : keys) {
+            captureShortcutOwnerIfNeeded(key);
             KGlobalAccel::stealShortcutSystemwide(key);
         }
         KGlobalAccel::self()->setShortcut(action, keys, KGlobalAccel::NoAutoloading);
@@ -458,7 +466,10 @@ void Ki3Tiler::disableOverviewHotCorner()
     interface.reconfigureEffect(QStringLiteral("overview"));
 }
 
-Ki3Tiler::~Ki3Tiler() = default;
+Ki3Tiler::~Ki3Tiler()
+{
+    restoreSessionStateOnCleanExit();
+}
 
 bool Ki3Tiler::isNonTileable(const Window *window) const
 {
@@ -964,6 +975,11 @@ void Ki3Tiler::setResizeMode(bool active)
     for (const ResizeModeShortcut &shortcut : m_resizeModeActions) {
         if (active) {
             for (const QKeySequence &key : shortcut.keys) {
+                // Bare keys (h/j/k/l/arrows/Escape/Return) essentially never
+                // have a real prior systemwide owner in practice, but capture
+                // defensively anyway -- cheap, and consistent with
+                // registerShortcuts()'s add() above.
+                captureShortcutOwnerIfNeeded(key);
                 KGlobalAccel::stealShortcutSystemwide(key);
             }
         }
