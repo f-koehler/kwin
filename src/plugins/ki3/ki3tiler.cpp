@@ -1155,6 +1155,15 @@ void Ki3Tiler::moveWindow(Qt::Edge edge)
     // placeWindowAt joins it as a new tab (group-to-group move).
     CustomTile *target = leaf->nextNonLayoutTileAt(edge);
     if (!target || target->windows().isEmpty()) {
+        // No existing tile to pop into. For a group member this is the common
+        // case, not a true dead end: the tile that would receive it was very
+        // often the window's own former position before it joined the group,
+        // and that slot no longer exists (its leaf was collapsed on the way
+        // in). Mirror i3: still eject, by splitting the group's own tile to
+        // make room, instead of silently doing nothing.
+        if (fromGroup) {
+            ejectGroupMemberViaSplit(leaf, self, edge);
+        }
         return;
     }
     if (self == target->windows().constFirst()) {
@@ -1212,6 +1221,104 @@ void Ki3Tiler::moveWindow(Qt::Edge edge)
         refreshGroup(leaf); // group survived with remaining tabs: restack its header
     }
     qCDebug(KWIN_KI3) << "move" << edge << self->caption() << (fromGroup ? "(out of group)" : "");
+    workspace()->activateWindow(self);
+}
+
+void Ki3Tiler::ejectGroupMemberViaSplit(CustomTile *leaf, Window *self, Qt::Edge edge)
+{
+    auto srcGroup = m_tabbed.find(leaf);
+    if (srcGroup == m_tabbed.end()) {
+        return;
+    }
+
+    // The group's other surviving tabs; self is still listed in the group at
+    // this point (moveWindow() only drops it once a target leaf is found,
+    // which didn't happen here). If self was the group's only member there's
+    // nothing to split off from and nowhere for it to have come from either.
+    QList<Window *> remaining;
+    for (const QPointer<Window> &w : srcGroup->windows) {
+        if (w && w != self) {
+            remaining.append(w);
+        }
+    }
+    if (remaining.isEmpty()) {
+        return;
+    }
+
+    // Split perpendicular to the edge: Left/Right make a new horizontal pair,
+    // Top/Bottom a vertical one. CustomTile::split() always puts the
+    // "before" half (left/top) at index 0 -- reusing `leaf` itself when the
+    // parent already runs the same direction, or two brand-new tiles when it
+    // has to nest a new sub-layout (see the CustomTile::split()/placeWindowAt
+    // comments). Either way we treat both results as opaque and reattach
+    // every window explicitly afterwards, exactly like placeWindowAt()'s own
+    // split fallback does.
+    const Tile::LayoutDirection direction =
+        (edge == Qt::LeftEdge || edge == Qt::RightEdge) ? Tile::LayoutDirection::Horizontal
+                                                        : Tile::LayoutDirection::Vertical;
+    const QList<CustomTile *> created = leaf->split(direction);
+    if (created.size() != 2) {
+        qCWarning(KWIN_KI3) << "eject-from-group: unexpected split result, size" << created.size();
+        return;
+    }
+    const bool selfLeadsGroup = (edge == Qt::LeftEdge || edge == Qt::TopEdge);
+    CustomTile *ejectedSlot = selfLeadsGroup ? created.first() : created.last();
+    CustomTile *groupSlot = selfLeadsGroup ? created.last() : created.first();
+
+    for (Window *w : remaining) {
+        attachWindow(w, groupSlot);
+        m_leafForWindow[w] = groupSlot;
+    }
+    if (groupSlot != leaf) {
+        // The group moved to a freshly created tile: migrate its TabState
+        // (header included) to the new key. `leaf` itself is now either the
+        // ejected window's plain tile (case 1, see CustomTile::split()) or a
+        // defunct non-leaf layout node (case 2) -- neither should keep
+        // driving the header, so drop its geometry-tracking connection and
+        // any stale reserve it's still carrying from being the group's home
+        // a moment ago (destroyGroupHeader() would also erase the m_tabbed
+        // entry we're about to move ourselves, so do its other two jobs
+        // directly instead of calling it). refreshGroup() only wires this
+        // connection when it creates a *new* header, so with the header
+        // carried over unchanged we have to reconnect it to groupSlot here.
+        disconnect(leaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::onGroupGeometryChanged);
+        leaf->setHeaderReserve(0.0);
+
+        TabState st = *srcGroup;
+        st.windows.clear();
+        for (Window *w : remaining) {
+            st.windows.append(w);
+        }
+        st.active = std::clamp(st.active, 0, int(st.windows.size()) - 1);
+        m_tabbed.erase(srcGroup);
+        m_tabbed.insert(groupSlot, st);
+        connect(groupSlot, &Tile::windowGeometryChanged, this, &Ki3Tiler::onGroupGeometryChanged, Qt::UniqueConnection);
+        connect(groupSlot, &QObject::destroyed, this, &Ki3Tiler::onGroupTileDestroyed, Qt::UniqueConnection);
+    } else {
+        srcGroup->windows.clear();
+        for (Window *w : remaining) {
+            srcGroup->windows.append(w);
+        }
+        srcGroup->active = std::clamp(srcGroup->active, 0, int(srcGroup->windows.size()) - 1);
+    }
+
+    // ejectedSlot is now a plain leaf, never a group. If split() reused
+    // `leaf` as its object (case 1, ejecting toward the "before" i.e.
+    // left/top half -- see CustomTile::split()), it's still carrying the
+    // header reserve from when it *was* the group's tile: left uncleared,
+    // the window's content area stays shrunk by a header strip that's no
+    // longer drawn there (the reported bug). A no-op when ejectedSlot is a
+    // brand-new tile, which already defaults to 0.
+    ejectedSlot->setHeaderReserve(0.0);
+
+    attachWindow(self, ejectedSlot);
+    m_leafForWindow[self] = ejectedSlot;
+    self->setNoBorder(true);
+    m_lastFocusedLeaf = ejectedSlot;
+
+    qCDebug(KWIN_KI3) << "move" << edge << self->caption() << "(ejected from group via split)";
+    refreshGroup(groupSlot);
+    updateSplitIndicator();
     workspace()->activateWindow(self);
 }
 
