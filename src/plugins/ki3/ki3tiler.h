@@ -519,6 +519,24 @@ private:
     VirtualDesktop *firstFreeDesktop() const;
 
     /**
+     * Synchronously tear down any tab/stack group living on @p output, right
+     * as it's being removed -- *before* KWin destroys the output's
+     * TileManager/RootTile/CustomTile tree (Workspace::outputRemoved fires
+     * before that happens; workspace.cpp's output-removal loop only tears
+     * the tile tree down afterwards). scheduleReconcile()'s queued
+     * reconcileOutputs() runs too late for this specifically: a group's
+     * CustomTile stays connected to Tile::windowGeometryChanged
+     * (onGroupGeometryChanged) for its whole life, and something during that
+     * destruction cascade can re-emit it on a tile whose destructor has
+     * already partly run -- Qt's "class destructor may have already run"
+     * safety assertion, a real reproducible crash (see ki3-PLAN.md). Calling
+     * destroyGroupHeader() here first removes the connection proactively, so
+     * by the time the real destruction happens there's nothing left of
+     * ki3's to crash regardless of the exact KWin-internal re-entrancy path.
+     */
+    void teardownGroupsOnOutput(LogicalOutput *output);
+
+    /**
      * Queue a single (coalesced) reconcile after an output was plugged/unplugged.
      * Deferred so it runs once KWin has finished re-homing windows and tile trees.
      */
