@@ -15,6 +15,7 @@ target_sources(ki3 PRIVATE
     ki3header.cpp
     ki3rules.cpp
     ki3tiler.cpp
+    ki3session.cpp
     ki3groups.cpp
     ki3workspaces.cpp
     ki3float.cpp

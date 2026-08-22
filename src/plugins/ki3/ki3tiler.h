@@ -132,6 +132,51 @@ private:
     void handleWindowRemoved(Window *window);
     void handleWindowActivated(Window *window);
 
+    /**
+     * Snapshot whatever ki3 is about to overwrite in the *real* kwinrc/
+     * kglobalshortcutsrc -- but only the first time, guarded by
+     * `ki3rc [SessionBackup] Pending`. A leftover `Pending=true` from an
+     * unclean previous exit means the real config *already* holds ki3's own
+     * values, not the user's; re-snapshotting then would capture ki3's state
+     * as if it were the original, corrupting the restore this is meant to
+     * provide. Called first thing in the constructor, before anything that
+     * mutates kwinrc/global shortcuts. See restoreSessionStateOnCleanExit()
+     * and ki3session.cpp for the full design (ki3-PLAN.md has the write-up).
+     */
+    void backupSessionStateIfNeeded();
+
+    /**
+     * Snapshot the current owner of @p key into the SessionBackup group,
+     * right before registerShortcuts()/setResizeMode() steal it -- but only
+     * if this session took a fresh backup at startup (m_captureShortcutOwners;
+     * false means one was already pending from an unclean exit, so the real
+     * config already holds ki3's own values and there's nothing genuine left
+     * to capture). Also a no-op if nobody currently owns the key, or if the
+     * current owner is already ki3 itself (ki3OwnsAction()) -- e.g. a later
+     * setResizeMode() activation re-stealing a key it already grabbed earlier
+     * this same session.
+     */
+    void captureShortcutOwnerIfNeeded(const QKeySequence &key);
+
+    /** True if @p actionUniqueName is one of ki3's own "ki3_*" action ids. */
+    bool ki3OwnsAction(const QString &actionUniqueName) const;
+
+    /**
+     * Undo backupSessionStateIfNeeded()'s overwrites: restore the real
+     * kwinrc groups ki3 touched and hand every captured shortcut back to its
+     * original owner via KGlobalAccel's setForeignShortcut(). Called from
+     * ~Ki3Tiler(), which runs on a normal logout well before Workspace/
+     * VirtualDesktopManager teardown (Application::destroyPlugins() runs
+     * before destroyWorkspace() in ApplicationWayland::~ApplicationWayland(),
+     * see main_wayland.cpp) -- so this can still use the live APIs. A no-op
+     * if nothing is pending (nothing was ever backed up, or a clean exit
+     * already restored and cleared it). No effect on a hard crash/SIGKILL,
+     * which skips destructors entirely -- session/ki3-restore-if-pending.sh
+     * (run at the next normal Plasma login via XDG autostart) is the
+     * fallback for that case.
+     */
+    void restoreSessionStateOnCleanExit();
+
     /** Register global shortcuts. */
     void registerShortcuts();
 
@@ -673,6 +718,14 @@ private:
 
     // Coalesces pruneEmptyDesktops calls after window removal / workspace switch.
     bool m_prunePending = false;
+
+    // Set once by backupSessionStateIfNeeded(): true if this session took a
+    // fresh SessionBackup snapshot, false if one was already Pending from an
+    // unclean exit (meaning the real config already holds ki3's own values,
+    // so there's nothing genuine left to capture this session). Gates every
+    // captureShortcutOwnerIfNeeded() call for the rest of the session. See
+    // ki3session.cpp.
+    bool m_captureShortcutOwners = false;
 
     // Coalesces scheduleBorderRecheck() calls after any window's geometry commits.
     bool m_borderRecheckPending = false;
