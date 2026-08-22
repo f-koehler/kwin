@@ -329,8 +329,15 @@ LogicalOutput *Ki3Tiler::outputForDesktop(VirtualDesktop *desktop, Window *exclu
         // internalwindow.cpp) -- without this check, whenever our own overlay
         // happens to be visible it looks like "a real window on every desktop"
         // and permanently blocks that desktop from ever being pruned.
-        if (w != exclude && !w->isInternal() && w->isClient() && w->isNormalWindow()
-            && w->output() && w->isOnDesktop(desktop)) {
+        // isDeleted() checked first, deliberately, before isInternal()/isClient()
+        // (both virtual): a Window in KWin's transient "deleted" (closing-
+        // animation) state can have a vtable that's unsafe to dispatch through
+        // right then -- see shouldManage()'s doc comment (ki3tiler.cpp) for the
+        // gdb-confirmed crash this same pattern caused during output hot-unplug.
+        // isDeleted() itself is the one non-virtual accessor here, safe
+        // regardless.
+        if (w != exclude && !w->isDeleted() && !w->isInternal() && w->isClient()
+            && w->isNormalWindow() && w->output() && w->isOnDesktop(desktop)) {
             return w->output();
         }
     }
@@ -352,8 +359,11 @@ void Ki3Tiler::focusOutput(LogicalOutput *output)
         // Exclude our own overlays (see outputForDesktop()): the split
         // indicator is "shown" and "on every desktop" whenever it's visible,
         // and being topmost it would otherwise steal focus from a real window.
-        if (w && !w->isInternal() && w->isClient() && w->isNormalWindow() && w->isShown()
-            && w->isOnOutput(output) && w->isOnDesktop(desktop)) {
+        // isDeleted() first -- see outputForDesktop()'s comment above and
+        // shouldManage()'s (ki3tiler.cpp) for why, against isInternal()/
+        // isClient() (both virtual) right after it in this same check.
+        if (w && !w->isDeleted() && !w->isInternal() && w->isClient() && w->isNormalWindow()
+            && w->isShown() && w->isOnOutput(output) && w->isOnDesktop(desktop)) {
             workspace()->activateWindow(w);
             return;
         }

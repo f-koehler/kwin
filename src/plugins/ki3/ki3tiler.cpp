@@ -98,7 +98,9 @@ bool Ki3Tiler::leafWindowOccluded(Window *window) const
         -kIndicatorThickness, -kIndicatorThickness, kIndicatorThickness, kIndicatorThickness);
     for (int i = idx + 1; i < stack.size(); ++i) {
         Window *above = stack.at(i);
-        if (above->isInternal() || above->isOutline() || above->isDeleted()) {
+        // isDeleted() first, deliberately, before isInternal()/isOutline()
+        // (both virtual) -- see shouldManage()'s doc comment below for why.
+        if (above->isDeleted() || above->isInternal() || above->isOutline()) {
             continue;
         }
         if (!above->isShown() || !above->isOnCurrentDesktop()) {
