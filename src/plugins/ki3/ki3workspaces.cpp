@@ -19,6 +19,10 @@
 #include "window.h"
 #include "workspace.h"
 
+#include <KConfigGroup>
+#include <KSharedConfig>
+
+#include <QMap>
 #include <QRectF>
 #include <QSize>
 #include <QStringList>
@@ -276,34 +280,121 @@ void Ki3Tiler::pruneEmptyDesktops()
     }
 }
 
+void Ki3Tiler::loadWorkspaceOutputPreferences()
+{
+    m_workspaceOutputPreference.clear();
+    const KConfigGroup group =
+        KSharedConfig::openConfig(QStringLiteral("ki3rc"))->group(QStringLiteral("Workspaces"));
+    for (const QString &key : group.keyList()) {
+        bool ok = false;
+        const int number = key.toInt(&ok);
+        if (!ok || number < 1) {
+            qCWarning(KWIN_KI3) << "ki3rc [Workspaces]: ignoring invalid desktop number" << key;
+            continue;
+        }
+        QStringList outputNames = group.readEntry(key, QStringList());
+        for (QString &name : outputNames) {
+            name = name.trimmed();
+        }
+        outputNames.removeAll(QString());
+        if (outputNames.isEmpty()) {
+            continue;
+        }
+        m_workspaceOutputPreference.insert(number, outputNames);
+        qCDebug(KWIN_KI3) << "configured workspace preference: desktop" << number
+                          << "->" << outputNames;
+    }
+}
+
+void Ki3Tiler::claimConfiguredOutputs(QSet<LogicalOutput *> &claimedOutputs)
+{
+    if (m_workspaceOutputPreference.isEmpty()) {
+        return;
+    }
+    VirtualDesktopManager *vdm = VirtualDesktopManager::self();
+    const auto outputs = workspace()->outputs();
+
+    // QMap iterates in ascending key order, so a lower desktop number always
+    // wins a conflicting claim over a higher one.
+    for (auto it = m_workspaceOutputPreference.constBegin(); it != m_workspaceOutputPreference.constEnd(); ++it) {
+        LogicalOutput *target = nullptr;
+        for (const QString &name : it.value()) {
+            LogicalOutput *candidate = nullptr;
+            for (LogicalOutput *output : outputs) {
+                if (output->name() == name) {
+                    candidate = output;
+                    break;
+                }
+            }
+            if (candidate && !claimedOutputs.contains(candidate)) {
+                target = candidate;
+                break;
+            }
+        }
+        if (!target) {
+            continue; // none of this desktop's preferred outputs are connected/free
+        }
+
+        VirtualDesktop *desktop = getOrCreateDesktop(it.key());
+        if (!desktop) {
+            continue;
+        }
+        if (vdm->currentDesktop(target) != desktop) {
+            // Evict whoever is currently stuck showing this desktop first, so we
+            // never leave a stale duplicate around for enforceUniqueDesktops()'s
+            // generic dedup pass to find — that pass resolves duplicates by
+            // enumeration order, which could just as easily undo this claim as
+            // fix it.
+            if (LogicalOutput *staleHolder = outputShowingDesktop(desktop)) {
+                VirtualDesktop *fallback = firstFreeDesktop();
+                if (!fallback) {
+                    fallback = createFreshDesktop();
+                }
+                if (fallback) {
+                    vdm->setCurrent(fallback, staleHolder);
+                }
+            }
+            vdm->setCurrent(desktop, target);
+            qCDebug(KWIN_KI3) << "configured workspace" << it.key() << "-> output" << target->name();
+        }
+        claimedOutputs.insert(target);
+    }
+}
+
 void Ki3Tiler::assignInitialDesktops()
 {
     VirtualDesktopManager *vdm = VirtualDesktopManager::self();
     const auto outputs = workspace()->outputs();
-    const int nOutputs = std::max(1, int(outputs.size()));
 
-    // Target one numbered desktop per output. setCount() removes desktops from
-    // the end, so shrinking straight to nOutputs would destroy higher-numbered
-    // desktops and re-home their windows — harmless on a fresh boot (a single
-    // default desktop) but destructive on a plugin reload into a populated
-    // session. Never shrink past an occupied desktop: keep at least up to the
-    // highest one currently holding a window (pruneEmptyDesktops() clears any
-    // leftover empties afterwards anyway).
-    const auto existing = vdm->desktops();
-    int required = nOutputs;
-    for (int i = 0; i < existing.size(); ++i) {
-        if (outputForDesktop(existing[i])) {
-            required = std::max(required, i + 1);
+    // Configured preferences claim their output first; every other output falls
+    // back to the lowest desktop number not reserved by *any* configured entry
+    // (even one whose output isn't connected right now — that number still
+    // "belongs" to it in the user's config, so it's not fair game as a filler).
+    QSet<LogicalOutput *> claimed;
+    claimConfiguredOutputs(claimed);
+
+    int next = 1;
+    for (LogicalOutput *output : outputs) {
+        if (claimed.contains(output)) {
+            continue;
         }
+        while (m_workspaceOutputPreference.contains(next)) {
+            ++next;
+        }
+        VirtualDesktop *desktop = getOrCreateDesktop(next);
+        if (desktop) {
+            vdm->setCurrent(desktop, output);
+            qCDebug(KWIN_KI3) << "initial desktop" << next << "-> output" << output->name();
+        }
+        ++next;
     }
-    vdm->setCount(uint(required));
-    const auto desktops = vdm->desktops();
-    for (int i = 0; i < nOutputs; ++i) {
-        desktops[i]->setName(QString::number(i + 1));
-        if (i < int(outputs.size())) {
-            vdm->setCurrent(desktops[i], outputs[i]);
-            qCDebug(KWIN_KI3) << "initial desktop" << (i + 1) << "-> output" << (void *)outputs[i];
-        }
+
+    if (!outputs.isEmpty()) {
+        // getOrCreateDesktop() only ever adds desktops; it never touches KWin's
+        // original pre-ki3 default desktop (whose name is never a plain number,
+        // e.g. "Desktop 1"). If it's still unshown and windowless after the
+        // above, drop it the same way any other empty desktop gets dropped.
+        schedulePrune();
     }
 }
 
@@ -482,6 +573,14 @@ void Ki3Tiler::purgeStaleRoots()
 
 void Ki3Tiler::enforceUniqueDesktops()
 {
+    // Configured preferences reclaim their output first — e.g. a monitor that
+    // was unplugged and just came back takes its desktop back from whatever
+    // filled in for it. Self-contained (see claimConfiguredOutputs()), so the
+    // generic dedup pass below sees already-consistent state for every output
+    // it touched and simply no-ops on them.
+    QSet<LogicalOutput *> claimed;
+    claimConfiguredOutputs(claimed);
+
     // KWin gives a freshly plugged output desktop 1 by default
     // (initialDesktopForNewOutput), duplicating whatever another screen shows.
     // For each output whose desktop is already shown on an earlier output, move

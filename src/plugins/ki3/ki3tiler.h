@@ -16,6 +16,7 @@
 
 #include <QHash>
 #include <QList>
+#include <QMap>
 #include <QPointer>
 #include <QSet>
 #include <QStringList>
@@ -498,10 +499,39 @@ private:
     void scheduleBorderRecheck();
 
     /**
-     * Give each output a distinct starting desktop (output i -> desktop i+1) so
-     * no desktop number is shown on two screens at once — the i3/sway invariant.
+     * Give each output a starting desktop so no desktop number is shown on two
+     * screens at once — the i3/sway invariant. Outputs matching a configured
+     * entry in m_workspaceOutputPreference (see loadWorkspaceOutputPreferences())
+     * get that desktop number; every other output falls back to the lowest
+     * unreserved number, output i -> desktop i+1 in enumeration order (today's
+     * behaviour, unchanged, when nothing is configured).
      */
     void assignInitialDesktops();
+
+    /**
+     * Load the user's desktop -> output priority list from `ki3rc`'s
+     * `[Workspaces]` group (i3/sway `workspace <n> output <o1> <o2> ...` model:
+     * key = desktop number, value = comma-separated output names, first
+     * connected one wins) into m_workspaceOutputPreference. Called once at
+     * construction, like loadNonTileableRules().
+     */
+    void loadWorkspaceOutputPreferences();
+
+    /**
+     * Apply m_workspaceOutputPreference against the outputs currently connected:
+     * for each configured desktop number (ascending, so a lower number wins a
+     * conflicting claim), give it the first output in its priority list that is
+     * connected and not already claimed by an earlier desktop in this same pass.
+     * If that output currently shows a *different* desktop, that stale holder is
+     * evicted to a free desktop first — self-contained, so the duplicate can
+     * never end up resolved the wrong way by enforceUniqueDesktops()'s later,
+     * order-dependent dedup pass. Every output this claims is added to
+     * @p claimedOutputs so the caller's own fallback/dedup logic leaves it alone.
+     * No-op (and touches nothing) for any desktop with no configured entry, or
+     * whose preferred outputs are all disconnected or already claimed — that's
+     * the "no matching profile" default policy, unchanged from before.
+     */
+    void claimConfiguredOutputs(QSet<LogicalOutput *> &claimedOutputs);
 
     /** The output currently showing @p desktop, or nullptr if it is hidden. */
     LogicalOutput *outputShowingDesktop(VirtualDesktop *desktop) const;
@@ -548,7 +578,13 @@ private:
     /** Drop m_managedRoots entries whose TileManager/RootTile no longer exists. */
     void purgeStaleRoots();
 
-    /** Re-assert the one-desktop-per-screen invariant, moving duplicates to free desktops. */
+    /**
+     * Re-assert the one-desktop-per-screen invariant, moving duplicates to free
+     * desktops. Starts with claimConfiguredOutputs() so a configured preference
+     * (e.g. a monitor that was unplugged and just came back) reclaims its output
+     * before the generic dedup pass below runs — this is what makes the
+     * preference sway-style *live*, not just applied at startup.
+     */
     void enforceUniqueDesktops();
 
     /** Re-tile windows whose tile vanished (unplug) or that moved to another tree. */
@@ -725,6 +761,12 @@ private:
 
     // Rules (built-in + user config) for windows ki3 must never tile.
     QList<WindowRule> m_nonTileableRules;
+
+    // User's desktop -> output priority list, from ki3rc [Workspaces]. Desktop
+    // number -> ordered output names (first connected one wins). Empty entries
+    // (or numbers with no configured outputs) mean "no preference, use the
+    // default policy" — see claimConfiguredOutputs().
+    QMap<int, QStringList> m_workspaceOutputPreference;
 
     // Coalesces output plug/unplug events into a single deferred reconcile.
     bool m_reconcilePending = false;

@@ -135,6 +135,7 @@ Ki3Tiler::Ki3Tiler()
     backupSessionStateIfNeeded();
 
     m_nonTileableRules = loadNonTileableRules();
+    loadWorkspaceOutputPreferences();
 
     for (auto &strip : m_resizeBorder) {
         strip = std::make_unique<Ki3SolidOverlay>();
