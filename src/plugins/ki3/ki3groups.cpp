@@ -329,9 +329,24 @@ void Ki3Tiler::onGroupTileDestroyed(QObject *tile)
 {
     // The tile is mid-destruction; use it as a bare key only (no dereference).
     // qobject_cast would already return nullptr here, so cast statically.
-    if (m_tabbed.remove(static_cast<CustomTile *>(tile)) > 0) {
-        qCDebug(KWIN_KI3) << "tab group tile destroyed; dropped stale entry";
+    auto it = m_tabbed.find(static_cast<CustomTile *>(tile));
+    if (it == m_tabbed.end()) {
+        return;
     }
+    // This slot runs reentrantly, synchronously nested inside the dying
+    // tile's own QObject destructor -- see onTileBorderDestroyed()'s doc
+    // comment (ki3tiler.cpp) for the full trace of why actually tearing
+    // down TabState::header (a Ki3Header, itself a QWindow) right here is
+    // unsafe: it cascades into Workspace::windowRemoved, which every live
+    // Tile relays into unmanage(), and can reach back into this exact
+    // dying tile. Drop the map entry now, but let the header (and its
+    // window) actually die on the next event loop turn.
+    TabState st = std::move(it.value());
+    m_tabbed.erase(it);
+    QMetaObject::invokeMethod(this, [st = std::move(st)]() {
+        qCDebug(KWIN_KI3) << "tab group: deferred teardown of stale entry running";
+    }, Qt::QueuedConnection);
+    qCDebug(KWIN_KI3) << "tab group tile destroyed; dropped stale entry";
 }
 
 void Ki3Tiler::onManagedRootDestroyed(QObject *tile)

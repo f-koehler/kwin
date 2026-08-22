@@ -160,6 +160,10 @@ Ki3Tiler::Ki3Tiler()
     // invariant and re-tile windows KWin re-homes across outputs).
     connect(ws, &Workspace::outputAdded, this, &Ki3Tiler::scheduleReconcile);
     connect(ws, &Workspace::outputRemoved, this, &Ki3Tiler::scheduleReconcile);
+    // Runs synchronously, before scheduleReconcile()'s queued reconcileOutputs()
+    // -- and before KWin itself destroys this output's tile tree, which is the
+    // point. See teardownGroupsOnOutput()'s doc comment.
+    connect(ws, &Workspace::outputRemoved, this, &Ki3Tiler::teardownGroupsOnOutput);
 
     // KWin re-syncs its active output to the active window's output on every
     // activation (activation.cpp), and to the pointer/touch position otherwise
@@ -483,7 +487,19 @@ bool Ki3Tiler::isNonTileable(const Window *window) const
 
 bool Ki3Tiler::shouldManage(Window *window) const
 {
+    // isDeleted() checked first, deliberately, and by itself before any of
+    // the other (virtual) checks below: it's the one non-virtual accessor
+    // here (Window::isDeleted() -- window.h/.cpp -- a plain m_deleted flag
+    // read, no vtable dispatch), so it's safe to call even if window's
+    // vtable is in a bad way. Confirmed exploitable in practice: a
+    // reconcileOutputs() -> retileHomelessWindows() pass during output
+    // hot-unplug hit a Window still present in workspace()->windows() with
+    // m_deleted == true whose *virtual* isClient() call below crashed with
+    // a garbage vtable jump (landed in glibc's malloc arena -- see
+    // ki3-PLAN.md for the full gdb trace). Whatever left that window in
+    // this half-torn-down state, never touch anything virtual on it first.
     return window
+        && !window->isDeleted()
         && window->isClient() // managed by KWin (has placement control)
         && !window->isInternal() // ki3's own overlays (split indicator, tab
                                  // headers) and other internal windows report
@@ -492,7 +508,6 @@ bool Ki3Tiler::shouldManage(Window *window) const
         && !window->isSpecialWindow()
         && window->isResizable()
         && window->output()
-        && !window->isDeleted()
         && !isNonTileable(window)
         && !m_floatingWindows.contains(window);
 }
@@ -951,9 +966,29 @@ void Ki3Tiler::repositionTileBorder(CustomTile *leaf)
 void Ki3Tiler::onTileBorderDestroyed(QObject *tile)
 {
     // The tile is mid-destruction; use it as a bare key only (no dereference).
-    if (m_tileBorders.remove(static_cast<CustomTile *>(tile)) > 0) {
-        qCDebug(KWIN_KI3) << "tile border: owning tile destroyed; dropped stale entry";
+    auto it = m_tileBorders.find(static_cast<CustomTile *>(tile));
+    if (it == m_tileBorders.end()) {
+        return;
     }
+    // This slot runs reentrantly: synchronously nested inside the *dying
+    // tile's own* QObject destructor (Tile::~Tile() -> ~QObject() ->
+    // destroyed() -> here). Actually tearing down the border's
+    // Ki3SolidOverlay windows right now is unsafe -- destroying an internal
+    // QWindow cascades through Workspace::removeInternalWindow() ->
+    // windowRemoved(), which every live Tile relays into unmanage(); if
+    // that reaches back into a tile whose own destructor is still
+    // unwinding on this very call stack, it's a real crash (ki3-PLAN.md has
+    // the trace -- this is exactly the follow-on crash the Workspace-scoped
+    // disconnect() in Tile::~Tile() alone didn't cover). Drop the map entry
+    // now (m_tileBorders itself must never keep the stale key), but let the
+    // TileBorder's shared_ptrs -- and hence the overlay windows -- actually
+    // die on the next event loop turn instead, safely outside this cascade.
+    TileBorder border = std::move(it.value());
+    m_tileBorders.erase(it);
+    QMetaObject::invokeMethod(this, [border = std::move(border)]() {
+        qCDebug(KWIN_KI3) << "tile border: deferred teardown of stale entry running";
+    }, Qt::QueuedConnection);
+    qCDebug(KWIN_KI3) << "tile border: owning tile destroyed; dropped stale entry";
 }
 
 void Ki3Tiler::toggleResizeMode()

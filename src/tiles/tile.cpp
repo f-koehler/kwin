@@ -36,6 +36,35 @@ Tile::Tile(TileManager *tiling, Tile *parent)
 
 Tile::~Tile()
 {
+    // Sever the two relays wired unconditionally onto *every* tile in the
+    // constructor above (Workspace::configChanged into this tile's own
+    // windowGeometryChanged; Workspace::windowRemoved into unmanage()),
+    // which otherwise stay live for the tile's entire lifetime. QObject
+    // would eventually disconnect these itself, but only once we reach
+    // ~QObject() -- the *base* class destructor, which runs last, after
+    // this whole derived-class destructor body (and everything it directly
+    // or indirectly triggers) has already executed.
+    //
+    // That gap is real, not theoretical: destroying this tile can itself
+    // cascade into a Workspace::windowRemoved emission (e.g. QObject::
+    // destroyed() here reaches ki3's onTileBorderDestroyed(), which drops a
+    // Ki3SolidOverlay border window -- tearing down that QWindow unmaps an
+    // InternalWindow, which Workspace::removeInternalWindow() reports via
+    // windowRemoved()) -- which relays right back into *this exact tile's*
+    // unmanage(), re-entering a method on an object whose own destructor is
+    // still on the call stack above it. Qt's type safety in
+    // QMetaObject::activate() catches the resulting "class destructor may
+    // have already run" state and aborts -- a real, reproducible crash
+    // during output hot-unplug (ki3-PLAN.md has the full trace).
+    //
+    // Both relays' sender is always Workspace::self() specifically (see the
+    // constructor), so disconnect exactly that pair rather than every
+    // incoming connection wildcarded by receiver alone -- QObject::
+    // disconnect() doesn't support wildcarding *both* sender and signal at
+    // once for pointer-to-member-function connections like these (it just
+    // warns "Unexpected nullptr parameter" and does nothing).
+    disconnect(Workspace::self(), nullptr, this, nullptr);
+
     for (auto *t : std::as_const(m_children)) {
         // Prevents access upon child tiles destruction
         t->m_parentTile = nullptr;

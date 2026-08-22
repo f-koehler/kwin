@@ -396,6 +396,35 @@ VirtualDesktop *Ki3Tiler::firstFreeDesktop() const
     return freeFallback; // nullptr only if every desktop is shown (won't happen with 10)
 }
 
+void Ki3Tiler::teardownGroupsOnOutput(LogicalOutput *output)
+{
+    TileManager *tm = workspace()->tileManager(output);
+    if (!tm) {
+        return;
+    }
+    // Collect first, then tear down -- destroyGroupHeader() mutates state
+    // (setHeaderReserve() emits windowGeometryChanged) while we'd still be
+    // inside visitDescendants() otherwise.
+    QList<CustomTile *> groupsHere;
+    for (VirtualDesktop *desktop : VirtualDesktopManager::self()->desktops()) {
+        RootTile *root = tm->rootTile(desktop);
+        if (!root) {
+            continue;
+        }
+        root->visitDescendants([this, &groupsHere](Tile *t) {
+            auto *custom = static_cast<CustomTile *>(t);
+            if (m_tabbed.contains(custom)) {
+                groupsHere.append(custom);
+            }
+        });
+    }
+    for (CustomTile *tile : groupsHere) {
+        qCDebug(KWIN_KI3) << "output going away: tearing down group on" << (void *)tile;
+        destroyGroupHeader(tile);
+        m_tabbed.remove(tile);
+    }
+}
+
 void Ki3Tiler::scheduleReconcile()
 {
     if (m_reconcilePending) {
