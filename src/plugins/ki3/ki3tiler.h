@@ -201,7 +201,7 @@ private:
 
     /**
      * Collapse the focused container into a single tab/stack group leaf (i3/sway
-     * "layout tabbed"/"layout stacked", Meta+T/Meta+S). Re-invoking with the same
+     * "layout tabbed"/"layout stacked", Meta+W/Meta+S). Re-invoking with the same
      * mode splits it back out (untabContainer); invoking the other mode flips it
      * in place. T0 spike: model + visibility only, no header UI yet.
      */
@@ -352,6 +352,16 @@ private:
 
     /** Swap the active window with its neighbour in @p edge direction. */
     void moveWindow(Qt::Edge edge);
+
+    /**
+     * Eject @p self (a member of the group at @p leaf) toward @p edge when
+     * moveWindow() found no existing neighbour tile to pop it into -- splits
+     * @p leaf itself to make room, mirroring i3's "move" semantics: leaving a
+     * tab/stack group always succeeds, even off a group's edge that has
+     * nothing next to it (typically because that very slot is what the
+     * window vacated when it joined the group).
+     */
+    void ejectGroupMemberViaSplit(CustomTile *leaf, Window *self, Qt::Edge edge);
 
     /** Grow/shrink the active leaf along @p orientation by @p deltaPixels. */
     void resizeActive(Qt::Orientation orientation, qreal deltaPixels);
