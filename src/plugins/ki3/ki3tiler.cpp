@@ -125,14 +125,15 @@ bool Ki3Tiler::leafWindowOccluded(Window *window) const
 }
 
 Ki3Tiler::Ki3Tiler()
-    : m_splitIndicatorWindow(std::make_unique<Ki3SolidOverlay>())
+    : m_sessionGuard(std::make_unique<Ki3SessionGuard>())
+    , m_splitIndicatorWindow(std::make_unique<Ki3SolidOverlay>())
 {
     qCInfo(KWIN_KI3) << "ki3 tiling plugin loaded";
 
     // Snapshot whatever ki3 is about to overwrite in the real kwinrc/
     // kglobalshortcutsrc, before anything below touches either -- see
-    // ki3session.cpp and ~Ki3Tiler().
-    backupSessionStateIfNeeded();
+    // ki3sessionguard.h/ki3session.cpp and ~Ki3Tiler().
+    m_sessionGuard->backupIfNeeded();
 
     m_nonTileableRules = loadNonTileableRules();
     loadWorkspaceOutputPreferences();
@@ -223,9 +224,9 @@ void Ki3Tiler::registerShortcuts()
         // Take the keys away from any existing owner (e.g. Meta+L = Lock Session)
         // so ki3's tiling bindings win, like a real tiling WM grabbing the keys.
         // Captured first (if this session took a fresh SessionBackup) so
-        // restoreSessionStateOnCleanExit() can give it back later.
+        // Ki3SessionGuard::restoreOnCleanExit() can give it back later.
         for (const QKeySequence &key : keys) {
-            captureShortcutOwnerIfNeeded(key);
+            m_sessionGuard->noteShortcutGrab(key);
             KGlobalAccel::stealShortcutSystemwide(key);
         }
         KGlobalAccel::self()->setShortcut(action, keys, KGlobalAccel::NoAutoloading);
@@ -476,7 +477,7 @@ void Ki3Tiler::disableOverviewHotCorner()
 Ki3Tiler::~Ki3Tiler()
 {
     teardownManagedState();
-    restoreSessionStateOnCleanExit();
+    m_sessionGuard->restoreOnCleanExit();
 }
 
 void Ki3Tiler::teardownManagedState()
@@ -1089,7 +1090,7 @@ void Ki3Tiler::setResizeMode(bool active)
                 // have a real prior systemwide owner in practice, but capture
                 // defensively anyway -- cheap, and consistent with
                 // registerShortcuts()'s add() above.
-                captureShortcutOwnerIfNeeded(key);
+                m_sessionGuard->noteShortcutGrab(key);
                 KGlobalAccel::stealShortcutSystemwide(key);
             }
         }
