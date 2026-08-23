@@ -84,8 +84,9 @@ public:
     void updateAllFloatChromeBorders();
 
     /**
-     * Push a new resize-mode-active state in (see Ki3Tiler::setResizeMode())
-     * and immediately redraw the resize border to match.
+     * Push a new resize-mode-active state in (see
+     * ShortcutController::setResizeMode()) and immediately redraw the
+     * resize border to match.
      */
     void setResizeModeActive(bool active);
 
@@ -238,7 +239,7 @@ private:
     TileTreeController *m_tileTree;
 
     // Whether Meta+R resize mode is active; pushed in by
-    // Ki3Tiler::setResizeMode() via setResizeModeActive().
+    // ShortcutController::setResizeMode() via setResizeModeActive().
     bool m_resizeModeActive = false;
 
     // Coalesces scheduleBorderRecheck() calls after any window's geometry commits.
