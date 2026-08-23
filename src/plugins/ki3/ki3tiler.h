@@ -179,6 +179,29 @@ private:
      */
     void restoreSessionStateOnCleanExit();
 
+    /**
+     * Undo everything ki3 wrote into KWin's *windows* and *tile trees* (as
+     * opposed to restoreSessionStateOnCleanExit(), which only undoes config
+     * ki3 wrote): destroy floating chrome and restore each floating window's
+     * keep-above/decoration, restore each tiled window's decoration and
+     * detach it from its tile, drop tab/stack group headers, then remove
+     * ki3's own split structure so a fresh load (or KWin's default layout)
+     * starts clean. Called from ~Ki3Tiler(), on the same "runs before
+     * Workspace/VirtualDesktopManager teardown" guarantee documented on
+     * restoreSessionStateOnCleanExit() above.
+     *
+     * This makes *this destructor* safe to run to completion; it does not by
+     * itself make KWin's live PluginManager UnloadPlugin/LoadPlugin D-Bus
+     * round-trip safe to use for hot-reloading ki3 -- that hit a separate,
+     * KWin-level bug where a `false` return from LoadPlugin didn't reliably
+     * mean "not loaded", producing two simultaneous Ki3Tiler instances (see
+     * ki3-PLAN.md, "Hot-reload support" and its 2026-07-07 revert). Runtime
+     * hot-unload remains unsupported for that reason; this teardown exists
+     * for ordinary process-exit and to leave KWin in a clean state on the
+     * off chance something else does unload the plugin at runtime.
+     */
+    void teardownManagedState();
+
     /** Register global shortcuts. */
     void registerShortcuts();
 
