@@ -36,6 +36,7 @@ Ki3Tiler::Ki3Tiler()
     : m_sessionGuard(std::make_unique<Ki3SessionGuard>())
     , m_tileTree(std::make_unique<TileTreeController>())
     , m_decoration(std::make_unique<DecorationController>(m_tileTree.get()))
+    , m_workspace(std::make_unique<WorkspaceController>(m_tileTree.get(), m_decoration.get()))
 {
     qCInfo(KWIN_KI3) << "ki3 tiling plugin loaded";
 
@@ -44,21 +45,10 @@ Ki3Tiler::Ki3Tiler()
     // ki3sessionguard.h/ki3session.cpp and ~Ki3Tiler().
     m_sessionGuard->backupIfNeeded();
 
-    loadWorkspaceOutputPreferences();
-
     Workspace *ws = Workspace::self();
     connect(ws, &Workspace::windowAdded, this, &Ki3Tiler::handleWindowAdded);
     connect(ws, &Workspace::windowRemoved, this, &Ki3Tiler::handleWindowRemoved);
     connect(ws, &Workspace::windowActivated, this, &Ki3Tiler::handleWindowActivated);
-
-    // Adapt to monitors being plugged/unplugged (keep the one-desktop-per-screen
-    // invariant and re-tile windows KWin re-homes across outputs).
-    connect(ws, &Workspace::outputAdded, this, &Ki3Tiler::scheduleReconcile);
-    connect(ws, &Workspace::outputRemoved, this, &Ki3Tiler::scheduleReconcile);
-    // Runs synchronously, before scheduleReconcile()'s queued reconcileOutputs()
-    // -- and before KWin itself destroys this output's tile tree, which is the
-    // point. See teardownGroupsOnOutput()'s doc comment.
-    connect(ws, &Workspace::outputRemoved, this, &Ki3Tiler::teardownGroupsOnOutput);
 
     // KWin re-syncs its active output to the active window's output on every
     // activation (activation.cpp), and to the pointer/touch position otherwise
@@ -67,13 +57,17 @@ Ki3Tiler::Ki3Tiler()
     // too. Forwarded to the pager over D-Bus so it can mute the highlight on
     // every screen except the focused one.
     connect(ws, &Workspace::activeOutputChanged, this, &Ki3Tiler::focusedOutputChanged);
+    // WorkspaceController::desktopsChanged() is a plain internal signal (the
+    // D-Bus-visible one must be emitted from this, the registered /Ki3
+    // object) -- see its doc comment.
+    connect(m_workspace.get(), &WorkspaceController::desktopsChanged, this, &Ki3Tiler::desktopsChanged);
 
     // i3/sway model: each output independently shows one workspace. Unlike
     // Plasma's default (one desktop spanning all outputs), a desktop number here
     // exists on exactly one screen, and only desktops that are either shown or
     // occupied by windows exist at all — empty desktops are removed on the fly.
     VirtualDesktopManager::self()->setPerOutputVirtualDesktops(true);
-    assignInitialDesktops();
+    m_workspace->assignInitialDesktops();
 
     registerShortcuts();
     registerResizeModeShortcuts();
@@ -292,12 +286,12 @@ void Ki3Tiler::registerShortcuts()
         const int n = i + 1;
         add(QStringLiteral("ki3_workspace_%1").arg(n), i18n("ki3: Switch to Workspace %1", n),
             {QKeySequence(Qt::META | digits[i])}, [this, n]() {
-            switchToWorkspace(n);
+            m_workspace->switchToWorkspace(n);
         });
         add(QStringLiteral("ki3_move_workspace_%1").arg(n), i18n("ki3: Move to Workspace %1", n),
             {QKeySequence(Qt::META | Qt::SHIFT | digits[i]), QKeySequence(Qt::META | shiftedDigits[i])},
             [this, n]() {
-            moveActiveToWorkspace(n);
+            m_workspace->moveActiveToWorkspace(n);
         });
     }
 }
@@ -416,7 +410,7 @@ void Ki3Tiler::handleWindowRemoved(Window *window)
     }
     // Deferred: let KWin finish destroying the window before we check whether
     // its desktop became empty (the window may still appear in workspace()->windows()).
-    schedulePrune();
+    m_workspace->schedulePrune();
 }
 
 void Ki3Tiler::toggleResizeMode()
@@ -525,6 +519,95 @@ void Ki3Tiler::handleWindowActivated(Window *window)
     // A floating window's chrome border tracks focus the same way; see
     // DecorationController::updateFloatChromeBorder().
     m_decoration->updateAllFloatChromeBorders();
+}
+
+// D-Bus forwarders: the /Ki3 object registered on the session bus must be
+// this Ki3Tiler instance (see the class doc comment), so every Q_SCRIPTABLE
+// slot backed by WorkspaceController is a thin one-line forwarder.
+
+QStringList Ki3Tiler::outputNames() const
+{
+    return m_workspace->outputNames();
+}
+
+int Ki3Tiler::currentDesktopNumber(const QString &outputName) const
+{
+    return m_workspace->currentDesktopNumber(outputName);
+}
+
+int Ki3Tiler::desktopCount() const
+{
+    return m_workspace->desktopCount();
+}
+
+QList<int> Ki3Tiler::liveDesktopNumbers() const
+{
+    return m_workspace->liveDesktopNumbers();
+}
+
+QList<int> Ki3Tiler::desktopNumbersForOutput(const QString &outputName) const
+{
+    return m_workspace->desktopNumbersForOutput(outputName);
+}
+
+QString Ki3Tiler::focusedOutputName() const
+{
+    return m_workspace->focusedOutputName();
+}
+
+void Ki3Tiler::dbusSwitchToWorkspace(int number)
+{
+    m_workspace->switchToWorkspace(number);
+}
+
+void Ki3Tiler::dbusMoveActiveToWorkspace(int number)
+{
+    m_workspace->moveActiveToWorkspace(number);
+}
+
+QStringList Ki3Tiler::tiledWindowGeometries() const
+{
+    return m_workspace->tiledWindowGeometries();
+}
+
+QStringList Ki3Tiler::floatingWindowGeometries() const
+{
+    return m_workspace->floatingWindowGeometries();
+}
+
+bool Ki3Tiler::activeWindowNoBorder() const
+{
+    return m_workspace->activeWindowNoBorder();
+}
+
+bool Ki3Tiler::activeWindowKeepAbove() const
+{
+    return m_workspace->activeWindowKeepAbove();
+}
+
+QString Ki3Tiler::dbusAddTestOutput()
+{
+    return m_workspace->addTestOutput();
+}
+
+QString Ki3Tiler::dbusRemoveTestOutput()
+{
+    return m_workspace->removeTestOutput();
+}
+
+bool Ki3Tiler::dbusSetActiveWindowNoBorder(bool noBorder)
+{
+    return m_workspace->setActiveWindowNoBorder(noBorder);
+}
+
+bool Ki3Tiler::dbusSetActiveWindowKeepAbove(bool keepAbove)
+{
+    return m_workspace->setActiveWindowKeepAbove(keepAbove);
+}
+
+bool Ki3Tiler::dbusSetActiveWindowOnAllDesktops(bool onAllDesktops)
+{
+    return m_workspace->setActiveWindowOnAllDesktops(onAllDesktops);
 }
 
 } // namespace KWin

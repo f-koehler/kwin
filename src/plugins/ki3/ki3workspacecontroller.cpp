@@ -7,8 +7,8 @@
     SPDX-License-Identifier: GPL-2.0-or-later
 */
 
+#include "ki3workspacecontroller.h"
 #include "ki3_logging.h"
-#include "ki3tiler.h"
 
 #include "core/output.h"
 #include "core/outputbackend.h"
@@ -22,15 +22,32 @@
 #include <KConfigGroup>
 #include <KSharedConfig>
 
-#include <QMap>
 #include <QRectF>
 #include <QSize>
-#include <QStringList>
 
 namespace KWin
 {
 
-QStringList Ki3Tiler::outputNames() const
+WorkspaceController::WorkspaceController(TileTreeController *tileTree, DecorationController *decoration,
+                                         QObject *parent)
+    : QObject(parent)
+    , m_tileTree(tileTree)
+    , m_decoration(decoration)
+{
+    loadWorkspaceOutputPreferences();
+
+    // Adapt to monitors being plugged/unplugged (keep the one-desktop-per-screen
+    // invariant and re-tile windows KWin re-homes across outputs).
+    Workspace *ws = Workspace::self();
+    connect(ws, &Workspace::outputAdded, this, &WorkspaceController::scheduleReconcile);
+    connect(ws, &Workspace::outputRemoved, this, &WorkspaceController::scheduleReconcile);
+    // Runs synchronously, before scheduleReconcile()'s queued reconcileOutputs()
+    // -- and before KWin itself destroys this output's tile tree, which is the
+    // point. See teardownGroupsOnOutput()'s doc comment.
+    connect(ws, &Workspace::outputRemoved, this, &WorkspaceController::teardownGroupsOnOutput);
+}
+
+QStringList WorkspaceController::outputNames() const
 {
     QStringList names;
     const auto outputs = workspace()->outputs();
@@ -41,7 +58,7 @@ QStringList Ki3Tiler::outputNames() const
     return names;
 }
 
-int Ki3Tiler::currentDesktopNumber(const QString &outputName) const
+int WorkspaceController::currentDesktopNumber(const QString &outputName) const
 {
     const auto outputs = workspace()->outputs();
     for (LogicalOutput *output : outputs) {
@@ -58,12 +75,12 @@ int Ki3Tiler::currentDesktopNumber(const QString &outputName) const
     return 0;
 }
 
-int Ki3Tiler::desktopCount() const
+int WorkspaceController::desktopCount() const
 {
     return VirtualDesktopManager::self()->count();
 }
 
-QList<int> Ki3Tiler::liveDesktopNumbers() const
+QList<int> WorkspaceController::liveDesktopNumbers() const
 {
     QList<int> numbers;
     for (VirtualDesktop *d : VirtualDesktopManager::self()->desktops()) {
@@ -76,7 +93,7 @@ QList<int> Ki3Tiler::liveDesktopNumbers() const
     return numbers; // already in insertion order, which we keep sorted
 }
 
-QList<int> Ki3Tiler::desktopNumbersForOutput(const QString &outputName) const
+QList<int> WorkspaceController::desktopNumbersForOutput(const QString &outputName) const
 {
     LogicalOutput *target = nullptr;
     for (LogicalOutput *output : workspace()->outputs()) {
@@ -107,7 +124,7 @@ QList<int> Ki3Tiler::desktopNumbersForOutput(const QString &outputName) const
     return numbers;
 }
 
-QStringList Ki3Tiler::tiledWindowGeometries() const
+QStringList WorkspaceController::tiledWindowGeometries() const
 {
     QStringList out;
     for (Window *window : m_tileTree->managedWindows()) {
@@ -133,7 +150,7 @@ QStringList Ki3Tiler::tiledWindowGeometries() const
     return out;
 }
 
-QStringList Ki3Tiler::floatingWindowGeometries() const
+QStringList WorkspaceController::floatingWindowGeometries() const
 {
     QStringList out;
     for (Window *window : m_tileTree->floatingWindows()) {
@@ -152,19 +169,19 @@ QStringList Ki3Tiler::floatingWindowGeometries() const
     return out;
 }
 
-bool Ki3Tiler::activeWindowNoBorder() const
+bool WorkspaceController::activeWindowNoBorder() const
 {
     Window *window = workspace()->activeWindow();
     return window && window->noBorder();
 }
 
-bool Ki3Tiler::activeWindowKeepAbove() const
+bool WorkspaceController::activeWindowKeepAbove() const
 {
     Window *window = workspace()->activeWindow();
     return window && window->keepAbove();
 }
 
-QString Ki3Tiler::dbusAddTestOutput()
+QString WorkspaceController::addTestOutput()
 {
     if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
         return QString();
@@ -173,7 +190,7 @@ QString Ki3Tiler::dbusAddTestOutput()
     BackendOutput *out = kwinApp()->outputBackend()->createVirtualOutput(
         name, name, QSize(1280, 800), 1.0);
     if (!out) {
-        qCWarning(KWIN_KI3) << "dbusAddTestOutput: backend refused" << name;
+        qCWarning(KWIN_KI3) << "addTestOutput: backend refused" << name;
         return QString();
     }
     m_testOutputs.append(out);
@@ -181,7 +198,7 @@ QString Ki3Tiler::dbusAddTestOutput()
     return name;
 }
 
-QString Ki3Tiler::dbusRemoveTestOutput()
+QString WorkspaceController::removeTestOutput()
 {
     if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
         return QString();
@@ -199,7 +216,7 @@ QString Ki3Tiler::dbusRemoveTestOutput()
     return QStringLiteral("removed");
 }
 
-bool Ki3Tiler::dbusSetActiveWindowNoBorder(bool noBorder)
+bool WorkspaceController::setActiveWindowNoBorder(bool noBorder)
 {
     if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
         return false;
@@ -212,7 +229,7 @@ bool Ki3Tiler::dbusSetActiveWindowNoBorder(bool noBorder)
     return true;
 }
 
-bool Ki3Tiler::dbusSetActiveWindowKeepAbove(bool keepAbove)
+bool WorkspaceController::setActiveWindowKeepAbove(bool keepAbove)
 {
     if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
         return false;
@@ -225,7 +242,7 @@ bool Ki3Tiler::dbusSetActiveWindowKeepAbove(bool keepAbove)
     return true;
 }
 
-bool Ki3Tiler::dbusSetActiveWindowOnAllDesktops(bool onAllDesktops)
+bool WorkspaceController::setActiveWindowOnAllDesktops(bool onAllDesktops)
 {
     if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
         return false;
@@ -243,17 +260,7 @@ bool Ki3Tiler::dbusSetActiveWindowOnAllDesktops(bool onAllDesktops)
     return true;
 }
 
-void Ki3Tiler::dbusSwitchToWorkspace(int number)
-{
-    switchToWorkspace(number);
-}
-
-void Ki3Tiler::dbusMoveActiveToWorkspace(int number)
-{
-    moveActiveToWorkspace(number);
-}
-
-LogicalOutput *Ki3Tiler::focusedOutput() const
+LogicalOutput *WorkspaceController::focusedOutput() const
 {
     if (Window *active = workspace()->activeWindow()) {
         if (LogicalOutput *output = active->output()) {
@@ -263,13 +270,13 @@ LogicalOutput *Ki3Tiler::focusedOutput() const
     return workspace()->activeOutput();
 }
 
-QString Ki3Tiler::focusedOutputName() const
+QString WorkspaceController::focusedOutputName() const
 {
     LogicalOutput *output = focusedOutput();
     return output ? output->name() : QString();
 }
 
-VirtualDesktop *Ki3Tiler::desktopByNumber(int n) const
+VirtualDesktop *WorkspaceController::desktopByNumber(int n) const
 {
     if (n < 1) {
         return nullptr;
@@ -283,7 +290,7 @@ VirtualDesktop *Ki3Tiler::desktopByNumber(int n) const
     return nullptr;
 }
 
-VirtualDesktop *Ki3Tiler::getOrCreateDesktop(int n)
+VirtualDesktop *WorkspaceController::getOrCreateDesktop(int n)
 {
     if (n < 1) {
         return nullptr;
@@ -307,7 +314,7 @@ VirtualDesktop *Ki3Tiler::getOrCreateDesktop(int n)
     return vdm->createVirtualDesktop(pos, QString::number(n));
 }
 
-VirtualDesktop *Ki3Tiler::createFreshDesktop()
+VirtualDesktop *WorkspaceController::createFreshDesktop()
 {
     const auto desktops = VirtualDesktopManager::self()->desktops();
     QSet<int> used;
@@ -325,7 +332,7 @@ VirtualDesktop *Ki3Tiler::createFreshDesktop()
     return getOrCreateDesktop(number);
 }
 
-void Ki3Tiler::schedulePrune()
+void WorkspaceController::schedulePrune()
 {
     if (m_prunePending) {
         return;
@@ -337,7 +344,7 @@ void Ki3Tiler::schedulePrune()
     }, Qt::QueuedConnection);
 }
 
-void Ki3Tiler::pruneEmptyDesktops()
+void WorkspaceController::pruneEmptyDesktops()
 {
     VirtualDesktopManager *vdm = VirtualDesktopManager::self();
     // Iterate a copy: removeVirtualDesktop modifies the live list.
@@ -354,7 +361,7 @@ void Ki3Tiler::pruneEmptyDesktops()
     }
 }
 
-void Ki3Tiler::loadWorkspaceOutputPreferences()
+void WorkspaceController::loadWorkspaceOutputPreferences()
 {
     m_workspaceOutputPreference.clear();
     const KConfigGroup group =
@@ -380,7 +387,7 @@ void Ki3Tiler::loadWorkspaceOutputPreferences()
     }
 }
 
-void Ki3Tiler::claimConfiguredOutputs(QSet<LogicalOutput *> &claimedOutputs)
+void WorkspaceController::claimConfiguredOutputs(QSet<LogicalOutput *> &claimedOutputs)
 {
     if (m_workspaceOutputPreference.isEmpty()) {
         return;
@@ -435,7 +442,7 @@ void Ki3Tiler::claimConfiguredOutputs(QSet<LogicalOutput *> &claimedOutputs)
     }
 }
 
-void Ki3Tiler::assignInitialDesktops()
+void WorkspaceController::assignInitialDesktops()
 {
     VirtualDesktopManager *vdm = VirtualDesktopManager::self();
     const auto outputs = workspace()->outputs();
@@ -472,7 +479,7 @@ void Ki3Tiler::assignInitialDesktops()
     }
 }
 
-LogicalOutput *Ki3Tiler::outputShowingDesktop(VirtualDesktop *desktop) const
+LogicalOutput *WorkspaceController::outputShowingDesktop(VirtualDesktop *desktop) const
 {
     VirtualDesktopManager *vdm = VirtualDesktopManager::self();
     const auto outputs = workspace()->outputs();
@@ -484,7 +491,7 @@ LogicalOutput *Ki3Tiler::outputShowingDesktop(VirtualDesktop *desktop) const
     return nullptr;
 }
 
-LogicalOutput *Ki3Tiler::outputForDesktop(VirtualDesktop *desktop, Window *exclude) const
+LogicalOutput *WorkspaceController::outputForDesktop(VirtualDesktop *desktop, Window *exclude) const
 {
     const auto windows = workspace()->windows();
     for (Window *w : windows) {
@@ -509,7 +516,7 @@ LogicalOutput *Ki3Tiler::outputForDesktop(VirtualDesktop *desktop, Window *exclu
     return nullptr;
 }
 
-void Ki3Tiler::focusOutput(LogicalOutput *output)
+void WorkspaceController::focusOutput(LogicalOutput *output)
 {
     if (!output) {
         return;
@@ -543,12 +550,12 @@ void Ki3Tiler::focusOutput(LogicalOutput *output)
     if (Window *active = workspace()->activeWindow(); active && active->output() != output) {
         workspace()->activateWindow(nullptr);
     }
-    // No window here to trigger handleWindowActivated -> refresh the
+    // No window here to trigger Ki3Tiler::handleWindowActivated -> refresh the
     // indicator ourselves so it doesn't linger on the previous output.
     m_decoration->updateSplitIndicator();
 }
 
-VirtualDesktop *Ki3Tiler::firstFreeDesktop() const
+VirtualDesktop *WorkspaceController::firstFreeDesktop() const
 {
     const auto desktops = VirtualDesktopManager::self()->desktops();
     // Prefer a desktop that is both free (shown on no output) AND truly empty (no
@@ -571,13 +578,13 @@ VirtualDesktop *Ki3Tiler::firstFreeDesktop() const
     return freeFallback; // nullptr only if every desktop is shown (won't happen with 10)
 }
 
-void Ki3Tiler::teardownGroupsOnOutput(LogicalOutput *output)
+void WorkspaceController::teardownGroupsOnOutput(LogicalOutput *output)
 {
     TileManager *tm = workspace()->tileManager(output);
     if (!tm) {
         return;
     }
-    // Collect first, then tear down -- destroyGroupHeader() mutates state
+    // Collect first, then tear down -- dropGroup() mutates state
     // (setHeaderReserve() emits windowGeometryChanged) while we'd still be
     // inside visitDescendants() otherwise.
     QList<CustomTile *> groupsHere;
@@ -599,7 +606,7 @@ void Ki3Tiler::teardownGroupsOnOutput(LogicalOutput *output)
     }
 }
 
-void Ki3Tiler::scheduleReconcile()
+void WorkspaceController::scheduleReconcile()
 {
     if (m_reconcilePending) {
         return;
@@ -607,10 +614,10 @@ void Ki3Tiler::scheduleReconcile()
     m_reconcilePending = true;
     // Run after KWin finishes the output reconfiguration (re-homing windows,
     // destroying defunct TileManagers) so we reconcile against settled state.
-    QMetaObject::invokeMethod(this, &Ki3Tiler::reconcileOutputs, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(this, &WorkspaceController::reconcileOutputs, Qt::QueuedConnection);
 }
 
-void Ki3Tiler::reconcileOutputs()
+void WorkspaceController::reconcileOutputs()
 {
     m_reconcilePending = false;
     qCDebug(KWIN_KI3) << "reconcile outputs:" << workspace()->outputs().size() << "output(s)";
@@ -621,7 +628,7 @@ void Ki3Tiler::reconcileOutputs()
     m_tileTree->refreshAllGroups();
 }
 
-void Ki3Tiler::enforceUniqueDesktops()
+void WorkspaceController::enforceUniqueDesktops()
 {
     // Configured preferences reclaim their output first — e.g. a monitor that
     // was unplugged and just came back takes its desktop back from whatever
@@ -674,7 +681,7 @@ void Ki3Tiler::enforceUniqueDesktops()
     }
 }
 
-void Ki3Tiler::retileHomelessWindows()
+void WorkspaceController::retileHomelessWindows()
 {
     const auto windows = workspace()->windows();
     for (Window *window : windows) {
@@ -701,7 +708,7 @@ void Ki3Tiler::retileHomelessWindows()
     }
 }
 
-void Ki3Tiler::ensureSaneFocus()
+void WorkspaceController::ensureSaneFocus()
 {
     Window *active = workspace()->activeWindow();
     // isShown() ignores virtual-desktop visibility, so also require the window to
@@ -713,7 +720,7 @@ void Ki3Tiler::ensureSaneFocus()
     focusOutput(workspace()->activeOutput());
 }
 
-void Ki3Tiler::switchToWorkspace(int number)
+void WorkspaceController::switchToWorkspace(int number)
 {
     VirtualDesktop *desktop = getOrCreateDesktop(number);
     if (!desktop) {
@@ -742,7 +749,7 @@ void Ki3Tiler::switchToWorkspace(int number)
     schedulePrune(); // the desktop we just left may now be empty
 }
 
-void Ki3Tiler::moveActiveToWorkspace(int number)
+void WorkspaceController::moveActiveToWorkspace(int number)
 {
     Window *window = workspace()->activeWindow();
     if (!window) {

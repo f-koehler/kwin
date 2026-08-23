@@ -6,17 +6,13 @@
 
 #pragma once
 
-#include "core/backendoutput.h"
 #include "ki3decorationcontroller.h"
 #include "ki3sessionguard.h"
 #include "ki3tiletreecontroller.h"
+#include "ki3workspacecontroller.h"
 #include "plugin.h"
 
-#include <QHash>
 #include <QList>
-#include <QMap>
-#include <QPointer>
-#include <QSet>
 #include <QStringList>
 
 #include <memory>
@@ -24,9 +20,6 @@
 namespace KWin
 {
 
-class BackendOutput;
-class LogicalOutput;
-class VirtualDesktop;
 class Window;
 
 /**
@@ -36,15 +29,18 @@ class Window;
  * represent ki3's per-output model — can show/drive per-output desktops
  * without linking against KWin internals.
  *
- * As of the M1 refactor's Phase 1-3, this class delegates the tile tree,
+ * As of the M1 refactor's Phase 1-4, this class delegates the tile tree,
  * tab/stack group model, and floating-window set to TileTreeController
- * (m_tileTree), tile-border/split/resize-indicator/floating-chrome rendering
- * to DecorationController (m_decoration), and reversible-session config
+ * (m_tileTree); tile-border/split/resize-indicator/floating-chrome rendering
+ * to DecorationController (m_decoration); the per-output virtual-desktop
+ * model, output reconciliation, and most D-Bus-introspection query bodies to
+ * WorkspaceController (m_workspace); and reversible-session config
  * backup/restore to Ki3SessionGuard (m_sessionGuard) -- see
  * `~/.claude/plans/toasty-fluttering-kitten.md` and the matching
  * ki3-PLAN.md entries. What remains here: plugin lifecycle, global
- * shortcuts, virtual-desktop/output reconciliation, and the D-Bus surface
- * itself.
+ * shortcuts, and the D-Bus surface itself (every Q_SCRIPTABLE slot backed by
+ * WorkspaceController is a one-line forwarder, since the registered /Ki3
+ * object must stay this class).
  */
 class Ki3Tiler : public Plugin
 {
@@ -77,16 +73,17 @@ public Q_SLOTS:
     Q_SCRIPTABLE QList<int> desktopNumbersForOutput(const QString &outputName) const;
 
     /**
-     * Name of the output ki3 currently considers focused (see focusedOutput()),
-     * or empty if none. Lets the ki3-pager plasmoid mute its active-desktop
-     * highlight on every screen except this one.
+     * Name of the output ki3 currently considers focused (see
+     * WorkspaceController::focusedOutput()), or empty if none. Lets the
+     * ki3-pager plasmoid mute its active-desktop highlight on every screen
+     * except this one.
      */
     Q_SCRIPTABLE QString focusedOutputName() const;
 
-    /** D-Bus wrapper for switchToWorkspace(), for the ki3-pager plasmoid. */
+    /** D-Bus wrapper for WorkspaceController::switchToWorkspace(), for the ki3-pager plasmoid. */
     Q_SCRIPTABLE void dbusSwitchToWorkspace(int number);
 
-    /** D-Bus wrapper for moveActiveToWorkspace(), for the ki3-pager plasmoid. */
+    /** D-Bus wrapper for WorkspaceController::moveActiveToWorkspace(), for the ki3-pager plasmoid. */
     Q_SCRIPTABLE void dbusMoveActiveToWorkspace(int number);
 
     /** Whether Meta+R resize mode (see toggleResizeMode()) is currently active. */
@@ -236,136 +233,6 @@ private:
     /** Toggle the active window between tiled and floating. */
     void toggleFloating();
 
-    /** Switch to workspace (virtual desktop) @p number (1-based), i3/sway-style. */
-    void switchToWorkspace(int number);
-
-    /** Move the active window to workspace @p number (1-based), following it to its output. */
-    void moveActiveToWorkspace(int number);
-
-    /** Find the live desktop with user-facing number @p n (by name), or nullptr. */
-    VirtualDesktop *desktopByNumber(int n) const;
-
-    /**
-     * Return the live desktop for number @p n, creating it (with name == n) if
-     * it does not yet exist. Inserts in sorted order so the pager stays ordered.
-     */
-    VirtualDesktop *getOrCreateDesktop(int n);
-
-    /**
-     * Create a new desktop whose name is the smallest positive integer not
-     * already used as a desktop name. Used when a new output needs a workspace.
-     */
-    VirtualDesktop *createFreshDesktop();
-
-    /**
-     * Remove every desktop that is not currently shown on any output and has no
-     * windows. Called deferred (via schedulePrune) so KWin finishes window
-     * destruction before we check occupancy.
-     */
-    void pruneEmptyDesktops();
-
-    /** Queue a single (coalesced) pruneEmptyDesktops after the current event. */
-    void schedulePrune();
-
-    /**
-     * Give each output a starting desktop so no desktop number is shown on two
-     * screens at once — the i3/sway invariant. Outputs matching a configured
-     * entry in m_workspaceOutputPreference (see loadWorkspaceOutputPreferences())
-     * get that desktop number; every other output falls back to the lowest
-     * unreserved number, output i -> desktop i+1 in enumeration order (today's
-     * behaviour, unchanged, when nothing is configured).
-     */
-    void assignInitialDesktops();
-
-    /**
-     * Load the user's desktop -> output priority list from `ki3rc`'s
-     * `[Workspaces]` group (i3/sway `workspace <n> output <o1> <o2> ...` model:
-     * key = desktop number, value = comma-separated output names, first
-     * connected one wins) into m_workspaceOutputPreference. Called once at
-     * construction.
-     */
-    void loadWorkspaceOutputPreferences();
-
-    /**
-     * Apply m_workspaceOutputPreference against the outputs currently connected:
-     * for each configured desktop number (ascending, so a lower number wins a
-     * conflicting claim), give it the first output in its priority list that is
-     * connected and not already claimed by an earlier desktop in this same pass.
-     * If that output currently shows a *different* desktop, that stale holder is
-     * evicted to a free desktop first — self-contained, so the duplicate can
-     * never end up resolved the wrong way by enforceUniqueDesktops()'s later,
-     * order-dependent dedup pass. Every output this claims is added to
-     * @p claimedOutputs so the caller's own fallback/dedup logic leaves it alone.
-     * No-op (and touches nothing) for any desktop with no configured entry, or
-     * whose preferred outputs are all disconnected or already claimed — that's
-     * the "no matching profile" default policy, unchanged from before.
-     */
-    void claimConfiguredOutputs(QSet<LogicalOutput *> &claimedOutputs);
-
-    /** The output currently showing @p desktop, or nullptr if it is hidden. */
-    LogicalOutput *outputShowingDesktop(VirtualDesktop *desktop) const;
-
-    /**
-     * The output a (possibly hidden) @p desktop "lives" on: the output of the
-     * first client window on it, excluding @p exclude. nullptr if it has none.
-     */
-    LogicalOutput *outputForDesktop(VirtualDesktop *desktop, Window *exclude = nullptr) const;
-
-    /** Move keyboard focus to @p output by activating its top window there. */
-    void focusOutput(LogicalOutput *output);
-
-    /** First desktop not currently shown on any output, or nullptr if all are. */
-    VirtualDesktop *firstFreeDesktop() const;
-
-    /**
-     * Synchronously tear down any tab/stack group living on @p output, right
-     * as it's being removed -- *before* KWin destroys the output's
-     * TileManager/RootTile/CustomTile tree (Workspace::outputRemoved fires
-     * before that happens; workspace.cpp's output-removal loop only tears
-     * the tile tree down afterwards). scheduleReconcile()'s queued
-     * reconcileOutputs() runs too late for this specifically: a group's
-     * CustomTile stays connected to Tile::windowGeometryChanged for its whole
-     * life, and something during that destruction cascade can re-emit it on a
-     * tile whose destructor has already partly run -- Qt's "class destructor
-     * may have already run" safety assertion, a real reproducible crash (see
-     * ki3-PLAN.md). Calling m_tileTree->dropGroup() here first removes the
-     * connection proactively, so by the time the real destruction happens
-     * there's nothing left of ki3's to crash regardless of the exact
-     * KWin-internal re-entrancy path.
-     */
-    void teardownGroupsOnOutput(LogicalOutput *output);
-
-    /**
-     * Queue a single (coalesced) reconcile after an output was plugged/unplugged.
-     * Deferred so it runs once KWin has finished re-homing windows and tile trees.
-     */
-    void scheduleReconcile();
-
-    /** Reconcile ki3 state with the current set of outputs (see scheduleReconcile). */
-    void reconcileOutputs();
-
-    /**
-     * Re-assert the one-desktop-per-screen invariant, moving duplicates to free
-     * desktops. Starts with claimConfiguredOutputs() so a configured preference
-     * (e.g. a monitor that was unplugged and just came back) reclaims its output
-     * before the generic dedup pass below runs — this is what makes the
-     * preference sway-style *live*, not just applied at startup.
-     */
-    void enforceUniqueDesktops();
-
-    /** Re-tile windows whose tile vanished (unplug) or that moved to another tree. */
-    void retileHomelessWindows();
-
-    /**
-     * If focus was left on a window that is now hidden (e.g. the active output
-     * was unplugged and its window re-homed onto another screen's background
-     * desktop), move focus to the active output's visible desktop.
-     */
-    void ensureSaneFocus();
-
-    /** The output of the active window, else the globally active output. */
-    LogicalOutput *focusedOutput() const;
-
     /** Launch a terminal emulator (i3-style Meta+Return). */
     void spawnTerminal();
 
@@ -388,25 +255,14 @@ private:
     // m_tileTree (which it depends on, read-only).
     std::unique_ptr<DecorationController> m_decoration;
 
+    // Per-output virtual-desktop model, output reconciliation, and most of
+    // the D-Bus introspection query bodies -- see WorkspaceController's own
+    // doc comment. Constructed right after m_decoration (which it depends
+    // on, read-only, alongside m_tileTree).
+    std::unique_ptr<WorkspaceController> m_workspace;
+
     // Whether Meta+R resize mode is active; see toggleResizeMode().
     bool m_resizeMode = false;
-
-    // User's desktop -> output priority list, from ki3rc [Workspaces]. Desktop
-    // number -> ordered output names (first connected one wins). Empty entries
-    // (or numbers with no configured outputs) mean "no preference, use the
-    // default policy" — see claimConfiguredOutputs().
-    QMap<int, QStringList> m_workspaceOutputPreference;
-
-    // Coalesces output plug/unplug events into a single deferred reconcile.
-    bool m_reconcilePending = false;
-
-    // Test-only: virtual outputs hot-plugged via dbusAddTestOutput(), newest
-    // last. QPointer so an output that vanishes another way self-clears.
-    QList<QPointer<BackendOutput>> m_testOutputs;
-    int m_testOutputSeq = 0;
-
-    // Coalesces pruneEmptyDesktops calls after window removal / workspace switch.
-    bool m_prunePending = false;
 
     // One resize-mode-only shortcut (see registerResizeModeShortcuts()): the
     // action to trigger, and the keys setResizeMode() binds it to on entry /
