@@ -8,8 +8,7 @@
 */
 
 #include "ki3_logging.h"
-#include "ki3header.h"
-#include "ki3tiler.h"
+#include "ki3decorationcontroller.h"
 
 #include "core/output.h"
 #include "window.h"
@@ -20,35 +19,7 @@
 namespace KWin
 {
 
-void Ki3Tiler::toggleFloating()
-{
-    Window *window = workspace()->activeWindow();
-    if (!window) {
-        return;
-    }
-    if (m_tileTree->isFloating(window)) {
-        // Re-tile it.
-        m_tileTree->removeFloating(window);
-        destroyFloatChrome(window);
-        m_tileTree->restoreKeepAbove(window); // back to whatever it was before ki3 floated it
-        qCDebug(KWIN_KI3) << "unfloat" << window->caption();
-        m_tileTree->insertWindow(window);
-    } else if (m_tileTree->isManaged(window)) {
-        // Detach from the tree; it keeps its current geometry and floats.
-        m_tileTree->addFloating(window);
-        qCDebug(KWIN_KI3) << "float" << window->caption();
-        m_tileTree->forgetWindow(window); // restores its pre-ki3 decoration policy; createFloatChrome() below re-hides it
-        window->requestTile(nullptr);
-        window->setNoBorder(true); // ki3 draws its own title bar instead of the native SSD
-        // i3/sway: floating windows always stay above tiled ones, even across
-        // focus changes -- KWin's default focus-follows-raise would otherwise
-        // sink this behind a tiled window the user clicks on next.
-        window->setKeepAbove(true);
-        createFloatChrome(window);
-    }
-}
-
-void Ki3Tiler::createFloatChrome(Window *window)
+void DecorationController::createFloatChrome(Window *window)
 {
     if (!window || m_floatChrome.contains(window)) {
         return;
@@ -93,9 +64,9 @@ void Ki3Tiler::createFloatChrome(Window *window)
     }
 
     // Keep the chrome glued to the window as it moves/resizes/retitles. Plain
-    // lambdas (not Ki3Tiler methods), so Qt::UniqueConnection can't dedupe them
-    // — fine, since the m_floatChrome.contains() guard above already ensures
-    // this only runs once per window.
+    // lambdas (not DecorationController methods), so Qt::UniqueConnection
+    // can't dedupe them — fine, since the m_floatChrome.contains() guard
+    // above already ensures this only runs once per window.
     chrome.geometryConn = connect(window, &Window::frameGeometryChanged, this,
                                   [this, window] {
         repositionFloatChrome(window);
@@ -110,7 +81,7 @@ void Ki3Tiler::createFloatChrome(Window *window)
     qCDebug(KWIN_KI3) << "float chrome created for" << window->caption();
 }
 
-void Ki3Tiler::destroyFloatChrome(Window *window)
+void DecorationController::destroyFloatChrome(Window *window)
 {
     auto it = m_floatChrome.find(window);
     if (it == m_floatChrome.end()) {
@@ -121,7 +92,7 @@ void Ki3Tiler::destroyFloatChrome(Window *window)
     m_floatChrome.erase(it); // shared_ptrs drop refcount and free the overlay windows
 }
 
-void Ki3Tiler::repositionFloatChrome(Window *window)
+void DecorationController::repositionFloatChrome(Window *window)
 {
     auto it = m_floatChrome.find(window);
     if (it == m_floatChrome.end()) {
@@ -166,7 +137,7 @@ void Ki3Tiler::repositionFloatChrome(Window *window)
     updateFloatChromeBorder(window);
 }
 
-void Ki3Tiler::updateFloatChromeBorder(Window *window)
+void DecorationController::updateFloatChromeBorder(Window *window)
 {
     auto it = m_floatChrome.find(window);
     if (it == m_floatChrome.end()) {
@@ -190,10 +161,18 @@ void Ki3Tiler::updateFloatChromeBorder(Window *window)
     }
 }
 
-void Ki3Tiler::updateAllFloatChromeBorders()
+void DecorationController::updateAllFloatChromeBorders()
 {
     for (auto it = m_floatChrome.constBegin(); it != m_floatChrome.constEnd(); ++it) {
         updateFloatChromeBorder(it.key());
+    }
+}
+
+void DecorationController::teardownFloatChrome()
+{
+    const auto windows = m_floatChrome.keys();
+    for (Window *window : windows) {
+        destroyFloatChrome(window);
     }
 }
 

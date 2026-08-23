@@ -342,8 +342,9 @@ void TileTreeController::onGroupTileDestroyed(QObject *tile)
         return;
     }
     // This slot runs reentrantly, synchronously nested inside the dying
-    // tile's own QObject destructor -- see onTileBorderDestroyed()'s doc
-    // comment (ki3tiler.cpp) for the full trace of why actually tearing
+    // tile's own QObject destructor -- see
+    // DecorationController::onTileBorderDestroyed()'s doc comment
+    // (ki3decorationcontroller.cpp) for the full trace of why actually tearing
     // down TabState::header (a Ki3Header, itself a QWindow) right here is
     // unsafe: it cascades into Workspace::windowRemoved, which every live
     // Tile relays into unmanage(), and can reach back into this exact

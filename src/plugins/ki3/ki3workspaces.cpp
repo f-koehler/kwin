@@ -545,7 +545,7 @@ void Ki3Tiler::focusOutput(LogicalOutput *output)
     }
     // No window here to trigger handleWindowActivated -> refresh the
     // indicator ourselves so it doesn't linger on the previous output.
-    updateSplitIndicator();
+    m_decoration->updateSplitIndicator();
 }
 
 VirtualDesktop *Ki3Tiler::firstFreeDesktop() const
@@ -778,7 +778,7 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
     qCDebug(KWIN_KI3) << (floating ? "move floating window to workspace" : "move window to workspace") << number
                       << "on output" << (void *)window->output();
     if (floating) {
-        repositionFloatChrome(window); // hide/reposition chrome for its new desktop
+        m_decoration->repositionFloatChrome(window); // hide/reposition chrome for its new desktop
     } else {
         // Pass `home` explicitly: sendToOutput() above updates window->output()
         // only once the Wayland client acks the configure, so it can still report

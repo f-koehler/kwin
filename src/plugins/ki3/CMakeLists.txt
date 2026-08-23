@@ -19,8 +19,9 @@ target_sources(ki3 PRIVATE
     ki3tiletreecontroller.cpp
     ki3tiletreenavigation.cpp
     ki3tiletreegroups.cpp
+    ki3decorationcontroller.cpp
+    ki3decorationfloat.cpp
     ki3workspaces.cpp
-    ki3float.cpp
 )
 
 target_link_libraries(ki3 PRIVATE

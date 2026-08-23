@@ -24,9 +24,9 @@ static constexpr qreal kIndicatorThickness = 3.0;
  * KColorScheme-derived colours shared by Ki3Header and Ki3FloatTitleBar so
  * both paint from the active colour scheme's Header set (the same role
  * KWin's own window decorations draw their titlebar from) instead of a fixed
- * i3-ish palette. Computed once in Ki3Tiler::applyIndicatorColors() and
- * pushed to every header/title bar via setPalette() -- at creation, and again
- * whenever the colour scheme changes.
+ * i3-ish palette. Computed once in DecorationController::applyIndicatorColors()
+ * and pushed to every header/title bar via setPalette() -- at creation, and
+ * again whenever the colour scheme changes.
  */
 struct Ki3HeaderPalette
 {
