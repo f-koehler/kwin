@@ -8,8 +8,7 @@
 */
 
 #include "ki3_logging.h"
-#include "ki3header.h"
-#include "ki3tiler.h"
+#include "ki3tiletreecontroller.h"
 
 #include "tiles/customtile.h"
 #include "window.h"
@@ -20,7 +19,7 @@
 namespace KWin
 {
 
-void Ki3Tiler::setContainerMode(ContainerMode mode)
+void TileTreeController::setContainerMode(ContainerMode mode)
 {
     CustomTile *leaf = currentLeaf();
     if (!leaf) {
@@ -36,7 +35,7 @@ void Ki3Tiler::setContainerMode(ContainerMode mode)
             it->mode = mode;
             qCInfo(KWIN_KI3) << "container mode ->" << (mode == ContainerMode::Tabbed ? "tabbed" : "stacked");
             refreshGroup(leaf);
-            updateSplitIndicator();
+            Q_EMIT layoutChanged();
         }
         return;
     }
@@ -110,17 +109,17 @@ void Ki3Tiler::setContainerMode(ContainerMode mode)
     // Drop the entry the instant the container tile is destroyed (e.g. an
     // output unplug tears down its tile tree), so the raw-pointer key never
     // dangles. UniqueConnection dedupes if the same tile is re-tabbed later.
-    connect(container, &QObject::destroyed, this, &Ki3Tiler::onGroupTileDestroyed,
+    connect(container, &QObject::destroyed, this, &TileTreeController::onGroupTileDestroyed,
             Qt::UniqueConnection);
     m_lastFocusedLeaf = container;
 
     qCInfo(KWIN_KI3) << (mode == ContainerMode::Tabbed ? "tabbed" : "stacked")
                      << windows.size() << "windows; active" << st.active;
     refreshGroup(container);
-    updateSplitIndicator();
+    Q_EMIT layoutChanged();
 }
 
-void Ki3Tiler::untabContainer(CustomTile *tile)
+void TileTreeController::untabContainer(CustomTile *tile)
 {
     auto it = m_tabbed.find(tile);
     if (it == m_tabbed.end()) {
@@ -161,10 +160,10 @@ void Ki3Tiler::untabContainer(CustomTile *tile)
         insertWindow(windows[i]);
     }
     m_splitDirection = savedDirection;
-    updateSplitIndicator();
+    Q_EMIT layoutChanged();
 }
 
-void Ki3Tiler::cycleTab(CustomTile *tile, int delta)
+void TileTreeController::cycleTab(CustomTile *tile, int delta)
 {
     auto it = m_tabbed.find(tile);
     if (it == m_tabbed.end() || it->windows.isEmpty()) {
@@ -180,7 +179,7 @@ void Ki3Tiler::cycleTab(CustomTile *tile, int delta)
     }
 }
 
-void Ki3Tiler::updateTabVisibility(CustomTile *tile)
+void TileTreeController::updateTabVisibility(CustomTile *tile)
 {
     auto it = m_tabbed.find(tile);
     if (it == m_tabbed.end()) {
@@ -224,7 +223,7 @@ void Ki3Tiler::updateTabVisibility(CustomTile *tile)
     qCDebug(KWIN_KI3) << "tab visibility:" << st.windows.size() << "tabs, active" << st.active;
 }
 
-void Ki3Tiler::refreshGroup(CustomTile *tile)
+void TileTreeController::refreshGroup(CustomTile *tile)
 {
     // setHeaderReserve() below emits windowGeometryChanged, which we listen to;
     // ignore that re-entry *for this tile* — the outer call finishes against
@@ -264,7 +263,7 @@ void Ki3Tiler::refreshGroup(CustomTile *tile)
         // Reposition the header whenever the group tile's geometry changes (a
         // sibling closing/resizing redistributes our ancestor).
         connect(tile, &Tile::windowGeometryChanged, this,
-                &Ki3Tiler::onGroupGeometryChanged, Qt::UniqueConnection);
+                &TileTreeController::onGroupGeometryChanged, Qt::UniqueConnection);
     }
 
     // Hide the header when the visible tab isn't actually on screen.
@@ -297,7 +296,7 @@ void Ki3Tiler::refreshGroup(CustomTile *tile)
                       << "active" << st.active << "reserve" << headerPx;
 }
 
-void Ki3Tiler::refreshAllGroups()
+void TileTreeController::refreshAllGroups()
 {
     const auto tiles = m_tabbed.keys(); // snapshot: refreshGroup may erase
     for (CustomTile *tile : tiles) {
@@ -307,25 +306,34 @@ void Ki3Tiler::refreshAllGroups()
     }
 }
 
-void Ki3Tiler::destroyGroupHeader(CustomTile *tile)
+void TileTreeController::destroyGroupHeader(CustomTile *tile)
 {
     if (!tile) {
         return;
     }
-    disconnect(tile, &Tile::windowGeometryChanged, this, &Ki3Tiler::onGroupGeometryChanged);
+    disconnect(tile, &Tile::windowGeometryChanged, this, &TileTreeController::onGroupGeometryChanged);
     tile->setHeaderReserve(0.0);
     // The Ki3Header itself is owned by the TabState's shared_ptr and dies when
     // the caller erases the group from m_tabbed.
 }
 
-void Ki3Tiler::onGroupGeometryChanged()
+void TileTreeController::dropGroup(CustomTile *tile)
+{
+    // Combines destroyGroupHeader() with the m_tabbed erase, for a caller (see
+    // Ki3Tiler::teardownGroupsOnOutput()) that needs both done together and has
+    // no other reason to reach into the group model.
+    destroyGroupHeader(tile);
+    m_tabbed.remove(tile);
+}
+
+void TileTreeController::onGroupGeometryChanged()
 {
     if (auto *tile = qobject_cast<CustomTile *>(sender()); tile && m_tabbed.contains(tile)) {
         refreshGroup(tile);
     }
 }
 
-void Ki3Tiler::onGroupTileDestroyed(QObject *tile)
+void TileTreeController::onGroupTileDestroyed(QObject *tile)
 {
     // The tile is mid-destruction; use it as a bare key only (no dereference).
     // qobject_cast would already return nullptr here, so cast statically.
@@ -349,15 +357,7 @@ void Ki3Tiler::onGroupTileDestroyed(QObject *tile)
     qCDebug(KWIN_KI3) << "tab group tile destroyed; dropped stale entry";
 }
 
-void Ki3Tiler::onManagedRootDestroyed(QObject *tile)
-{
-    // Bare key only (mid-destruction); never dereferenced. See the header doc.
-    if (m_managedRoots.remove(static_cast<RootTile *>(tile)) > 0) {
-        qCDebug(KWIN_KI3) << "managed root destroyed; dropped stale entry";
-    }
-}
-
-void Ki3Tiler::activateTab(CustomTile *tile, int index)
+void TileTreeController::activateTab(CustomTile *tile, int index)
 {
     auto it = m_tabbed.find(tile);
     if (it == m_tabbed.end() || index < 0 || index >= it->windows.size()) {

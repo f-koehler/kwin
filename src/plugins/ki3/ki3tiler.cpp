@@ -10,12 +10,9 @@
 #include "ki3tiler.h"
 #include "ki3_logging.h"
 #include "ki3header.h"
-#include "ki3rules.h"
 
-#include "core/output.h"
 #include "main.h"
 #include "tiles/customtile.h"
-#include "tiles/tilemanager.h"
 #include "virtualdesktops.h"
 #include "window.h"
 #include "workspace.h"
@@ -31,7 +28,6 @@
 #include <QAction>
 #include <QDBusConnection>
 #include <QProcess>
-#include <QScopeGuard>
 #include <QStringList>
 
 #include <functional>
@@ -77,55 +73,9 @@ static std::array<RectF, 4> outwardBorderStrips(const RectF &geom)
     };
 }
 
-// True if some ordinary window stacked above @p window overlaps its frame — e.g.
-// a modal dialog (a gpg pinentry) raised over its tiled parent. The leaf-edge
-// overlays (focus/split/resize) live in KWin's AboveLayer and would otherwise
-// paint *over* such a window, so callers hide the border while it is covered.
-// Our own internal overlays and the outline are skipped (they always stack
-// above), as are windows that aren't shown on the current desktop.
-bool Ki3Tiler::leafWindowOccluded(Window *window) const
-{
-    const QList<Window *> &stack = workspace()->stackingOrder();
-    const int idx = stack.indexOf(window);
-    if (idx < 0) {
-        return false;
-    }
-    // Expand by kIndicatorThickness on every side: outwardBorderStrips() draws
-    // outside the window's own frame (see above it), so a window whose edge
-    // only clips that outward margin -- not the frame itself -- must still
-    // count as occluding, or the border keeps drawing over its edge.
-    const RectF geom = window->frameGeometry().adjusted(
-        -kIndicatorThickness, -kIndicatorThickness, kIndicatorThickness, kIndicatorThickness);
-    for (int i = idx + 1; i < stack.size(); ++i) {
-        Window *above = stack.at(i);
-        // isDeleted() first, deliberately, before isInternal()/isOutline()
-        // (both virtual) -- see shouldManage()'s doc comment below for why.
-        if (above->isDeleted() || above->isInternal() || above->isOutline()) {
-            continue;
-        }
-        if (!above->isShown() || !above->isOnCurrentDesktop()) {
-            continue;
-        }
-        // A window ki3 is about to tile itself, but hasn't gotten to yet, briefly
-        // sits at its own unconstrained placement (typically ~fullscreen) between
-        // being mapped and insertWindow() assigning it a real tile slot -- e.g. its
-        // windowActivated can fire before its windowAdded is processed, so
-        // currentLeaf() still resolves to the *previous* leaf right as the new
-        // window happens to overlap it. That's transit, not a real dialog sitting
-        // on top, so don't let it hide the border -- once insertWindow() places it,
-        // the subsequent updateSplitIndicator() call re-checks with real geometry.
-        if (!m_leafForWindow.contains(above) && shouldManage(above)) {
-            continue;
-        }
-        if (above->frameGeometry().intersects(geom)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 Ki3Tiler::Ki3Tiler()
     : m_sessionGuard(std::make_unique<Ki3SessionGuard>())
+    , m_tileTree(std::make_unique<TileTreeController>())
     , m_splitIndicatorWindow(std::make_unique<Ki3SolidOverlay>())
 {
     qCInfo(KWIN_KI3) << "ki3 tiling plugin loaded";
@@ -135,7 +85,6 @@ Ki3Tiler::Ki3Tiler()
     // ki3sessionguard.h/ki3session.cpp and ~Ki3Tiler().
     m_sessionGuard->backupIfNeeded();
 
-    m_nonTileableRules = loadNonTileableRules();
     loadWorkspaceOutputPreferences();
 
     for (auto &strip : m_resizeBorder) {
@@ -154,6 +103,11 @@ Ki3Tiler::Ki3Tiler()
             applyIndicatorColors();
         }
     });
+
+    // Replaces what used to be a direct updateSplitIndicator()/
+    // updateTileBorders() call from inside every tile-tree-mutating method --
+    // see TileTreeController::layoutChanged()'s doc comment.
+    connect(m_tileTree.get(), &TileTreeController::layoutChanged, this, &Ki3Tiler::updateSplitIndicator);
 
     Workspace *ws = Workspace::self();
     connect(ws, &Workspace::windowAdded, this, &Ki3Tiler::handleWindowAdded);
@@ -285,44 +239,44 @@ void Ki3Tiler::registerShortcuts()
     add(QStringLiteral("ki3_move_left"), i18n("ki3: Move Left"),
         {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_H), QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Left)},
         [this]() {
-        moveWindow(Qt::LeftEdge);
+        m_tileTree->moveWindow(Qt::LeftEdge);
     });
     add(QStringLiteral("ki3_move_down"), i18n("ki3: Move Down"),
         {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_J), QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Down)},
         [this]() {
-        moveWindow(Qt::BottomEdge);
+        m_tileTree->moveWindow(Qt::BottomEdge);
     });
     add(QStringLiteral("ki3_move_up"), i18n("ki3: Move Up"),
         {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_K), QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Up)},
         [this]() {
-        moveWindow(Qt::TopEdge);
+        m_tileTree->moveWindow(Qt::TopEdge);
     });
     add(QStringLiteral("ki3_move_right"), i18n("ki3: Move Right"),
         {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_L), QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Right)},
         [this]() {
-        moveWindow(Qt::RightEdge);
+        m_tileTree->moveWindow(Qt::RightEdge);
     });
 
     // Resize (Meta + Ctrl + h/j/k/l, also arrow keys), 50px steps
     add(QStringLiteral("ki3_resize_shrink_h"), i18n("ki3: Shrink Width"),
         {QKeySequence(Qt::META | Qt::CTRL | Qt::Key_H), QKeySequence(Qt::META | Qt::CTRL | Qt::Key_Left)},
         [this]() {
-        resizeActive(Qt::Horizontal, -50);
+        m_tileTree->resizeActive(Qt::Horizontal, -50);
     });
     add(QStringLiteral("ki3_resize_grow_h"), i18n("ki3: Grow Width"),
         {QKeySequence(Qt::META | Qt::CTRL | Qt::Key_L), QKeySequence(Qt::META | Qt::CTRL | Qt::Key_Right)},
         [this]() {
-        resizeActive(Qt::Horizontal, 50);
+        m_tileTree->resizeActive(Qt::Horizontal, 50);
     });
     add(QStringLiteral("ki3_resize_grow_v"), i18n("ki3: Grow Height"),
         {QKeySequence(Qt::META | Qt::CTRL | Qt::Key_J), QKeySequence(Qt::META | Qt::CTRL | Qt::Key_Down)},
         [this]() {
-        resizeActive(Qt::Vertical, 50);
+        m_tileTree->resizeActive(Qt::Vertical, 50);
     });
     add(QStringLiteral("ki3_resize_shrink_v"), i18n("ki3: Shrink Height"),
         {QKeySequence(Qt::META | Qt::CTRL | Qt::Key_K), QKeySequence(Qt::META | Qt::CTRL | Qt::Key_Up)},
         [this]() {
-        resizeActive(Qt::Vertical, -50);
+        m_tileTree->resizeActive(Qt::Vertical, -50);
     });
 
     // Launch a terminal (Meta + Return), i3-style.
@@ -336,19 +290,19 @@ void Ki3Tiler::registerShortcuts()
     add(QStringLiteral("ki3_split_horizontal"), i18n("ki3: Split Horizontal"),
         {QKeySequence(Qt::META | Qt::Key_G)},
         [this]() {
-        setSplitDirection(Tile::LayoutDirection::Horizontal);
+        m_tileTree->setSplitDirection(Tile::LayoutDirection::Horizontal);
     });
     add(QStringLiteral("ki3_split_vertical"), i18n("ki3: Split Vertical"),
         {QKeySequence(Qt::META | Qt::Key_V)},
         [this]() {
-        setSplitDirection(Tile::LayoutDirection::Vertical);
+        m_tileTree->setSplitDirection(Tile::LayoutDirection::Vertical);
     });
 
     // Toggle the current container's layout direction (i3/sway "layout toggle
     // split") and float toggle (Meta + Shift + Space)
     add(QStringLiteral("ki3_toggle_layout"), i18n("ki3: Toggle Container Layout"),
         {QKeySequence(Qt::META | Qt::Key_E)}, [this]() {
-        toggleContainerLayout();
+        m_tileTree->toggleContainerLayout();
     });
     add(QStringLiteral("ki3_toggle_float"), i18n("ki3: Toggle Floating"),
         {QKeySequence(Qt::META | Qt::SHIFT | Qt::Key_Space)}, [this]() {
@@ -360,11 +314,11 @@ void Ki3Tiler::registerShortcuts()
     // effect's default global shortcut (see also disableOverviewHotCorner()).
     add(QStringLiteral("ki3_layout_tabbed"), i18n("ki3: Tabbed Layout"),
         {QKeySequence(Qt::META | Qt::Key_W)}, [this]() {
-        setContainerMode(ContainerMode::Tabbed);
+        m_tileTree->setContainerMode(TileTreeController::ContainerMode::Tabbed);
     });
     add(QStringLiteral("ki3_layout_stacked"), i18n("ki3: Stacked Layout"),
         {QKeySequence(Qt::META | Qt::Key_S)}, [this]() {
-        setContainerMode(ContainerMode::Stacked);
+        m_tileTree->setContainerMode(TileTreeController::ContainerMode::Stacked);
     });
 
     // Close the active window (i3/sway "kill").
@@ -431,22 +385,22 @@ void Ki3Tiler::registerResizeModeShortcuts()
     add(QStringLiteral("ki3_resize_mode_shrink_h"), i18n("ki3: Resize Mode: Shrink Width"),
         {QKeySequence(Qt::Key_H), QKeySequence(Qt::Key_Left)},
         [this]() {
-        resizeActive(Qt::Horizontal, -step);
+        m_tileTree->resizeActive(Qt::Horizontal, -step);
     });
     add(QStringLiteral("ki3_resize_mode_grow_h"), i18n("ki3: Resize Mode: Grow Width"),
         {QKeySequence(Qt::Key_L), QKeySequence(Qt::Key_Right)},
         [this]() {
-        resizeActive(Qt::Horizontal, step);
+        m_tileTree->resizeActive(Qt::Horizontal, step);
     });
     add(QStringLiteral("ki3_resize_mode_shrink_v"), i18n("ki3: Resize Mode: Shrink Height"),
         {QKeySequence(Qt::Key_K), QKeySequence(Qt::Key_Up)},
         [this]() {
-        resizeActive(Qt::Vertical, -step);
+        m_tileTree->resizeActive(Qt::Vertical, -step);
     });
     add(QStringLiteral("ki3_resize_mode_grow_v"), i18n("ki3: Resize Mode: Grow Height"),
         {QKeySequence(Qt::Key_J), QKeySequence(Qt::Key_Down)},
         [this]() {
-        resizeActive(Qt::Vertical, step);
+        m_tileTree->resizeActive(Qt::Vertical, step);
     });
     // i3/sway also leave resize mode on Escape/Return, in addition to
     // re-pressing the mode's own Meta+R toggle.
@@ -482,231 +436,20 @@ Ki3Tiler::~Ki3Tiler()
 
 void Ki3Tiler::teardownManagedState()
 {
-    // Floating windows: drop ki3's chrome and hand back keep-above/decoration.
-    const auto floatingWindows = m_floatingWindows;
+    // Floating windows: drop ki3's chrome first (still Ki3Tiler-owned pending
+    // a future decoration-controller extraction) -- everything else (handing
+    // back keep-above/decoration, detaching tiled windows, dropping group
+    // headers, and removing ki3's own split structure) is self-contained on
+    // m_tileTree. Snapshot the set: destroyFloatChrome() doesn't touch it, but
+    // copying defensively costs nothing and matches how every other teardown
+    // loop here treats "the collection we're about to hand off" as a fixed
+    // point-in-time list.
+    const QSet<Window *> floatingWindows = m_tileTree->floatingWindows();
     for (Window *window : floatingWindows) {
         destroyFloatChrome(window);
-        restoreKeepAbove(window);
-        restoreDecorationPolicy(window);
     }
-    m_floatingWindows.clear();
-
-    // Tiled windows: restore decoration and detach from whatever tile they're
-    // still on. A null QPointer here means that tile's root already died
-    // (e.g. an unplugged output) without a reconcile pass catching it -- the
-    // window itself is still live and still needs its decoration restored,
-    // there's just nothing left to call forget() on.
-    const auto tiledWindows = m_leafForWindow.keys();
-    for (Window *window : tiledWindows) {
-        restoreDecorationPolicy(window);
-        if (CustomTile *leaf = m_leafForWindow.value(window)) {
-            leaf->forget(window); // clears the tile's window list *and* the
-                                  // window's requested tile so remove() below
-                                  // can't re-home it into a sibling
-        }
-    }
-    m_leafForWindow.clear();
-    m_lastFocusedLeaf = nullptr;
-
-    // Tab/stack group headers must go before their tiles do.
-    const auto groupTiles = m_tabbed.keys();
-    for (CustomTile *tile : groupTiles) {
-        destroyGroupHeader(tile);
-    }
-    m_tabbed.clear();
-
-    // Drop ki3's own split structure from every surviving root so the next
-    // load (or KWin's own default layout) starts clean instead of piling new
-    // splits on top of stale ones. Every leaf's windows are already forgotten
-    // above, so remove() has nothing left to migrate; a leaf that a sibling's
-    // removal already collapsed (see CustomTile::remove()'s single-child
-    // promotion) is simply parentless by the time we reach it, and remove()
-    // on an already-detached tile is a no-op.
-    purgeStaleRoots();
-    const auto roots = m_managedRoots;
-    for (RootTile *root : roots) {
-        QList<CustomTile *> leaves;
-        root->visitDescendants([&leaves](Tile *t) {
-            if (t->childCount() == 0 && !t->isRoot()) {
-                leaves.append(static_cast<CustomTile *>(t));
-            }
-        });
-        for (CustomTile *leaf : leaves) {
-            leaf->remove();
-        }
-    }
-    m_managedRoots.clear();
-}
-
-bool Ki3Tiler::isNonTileable(const Window *window) const
-{
-    for (const WindowRule &rule : m_nonTileableRules) {
-        if (rule.matches(window)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool Ki3Tiler::shouldManage(Window *window) const
-{
-    // isDeleted() checked first, deliberately, and by itself before any of
-    // the other (virtual) checks below: it's the one non-virtual accessor
-    // here (Window::isDeleted() -- window.h/.cpp -- a plain m_deleted flag
-    // read, no vtable dispatch), so it's safe to call even if window's
-    // vtable is in a bad way. Confirmed exploitable in practice: a
-    // reconcileOutputs() -> retileHomelessWindows() pass during output
-    // hot-unplug hit a Window still present in workspace()->windows() with
-    // m_deleted == true whose *virtual* isClient() call below crashed with
-    // a garbage vtable jump (landed in glibc's malloc arena -- see
-    // ki3-PLAN.md for the full gdb trace). Whatever left that window in
-    // this half-torn-down state, never touch anything virtual on it first.
-    return window
-        && !window->isDeleted()
-        && window->isClient() // managed by KWin (has placement control)
-        && !window->isInternal() // ki3's own overlays (split indicator, tab
-                                 // headers) and other internal windows report
-                                 // isClient() and windowType() == Normal too
-        && window->isNormalWindow()
-        && !window->isSpecialWindow()
-        && window->isResizable()
-        && window->output()
-        // i3 treats sticky (all-desktops) windows as floating, never tiled;
-        // apply the same policy to sticky *and* multi-desktop windows here.
-        // rootForWindow() associates a tiled window with exactly one root
-        // (window->desktops().constFirst()), so a window visible on several
-        // desktops at once has no stable single root to belong to -- picking
-        // "the first" (or, for all-desktops, "whichever is currently shown")
-        // is not a real semantic and would apply the wrong tile geometry
-        // across desktop switches (review finding M4).
-        && window->desktops().size() == 1
-        && !isNonTileable(window)
-        && !m_floatingWindows.contains(window);
-}
-
-RootTile *Ki3Tiler::rootForWindow(Window *window, LogicalOutput *outputHint) const
-{
-    LogicalOutput *output = outputHint ? outputHint : window->output();
-    if (!output) {
-        return nullptr;
-    }
-    TileManager *tm = workspace()->tileManager(output);
-    if (!tm) {
-        return nullptr;
-    }
-    VirtualDesktop *desktop = window->desktops().isEmpty()
-        ? VirtualDesktopManager::self()->currentDesktop(output)
-        : window->desktops().constFirst();
-    return tm->rootTile(desktop);
-}
-
-void Ki3Tiler::ensureManaged(RootTile *root)
-{
-    if (m_managedRoots.contains(root)) {
-        return;
-    }
-    m_managedRoots.insert(root);
-    // Keyed by raw pointer; a root dies on output unplug AND on desktop prune
-    // (TileManager deletes its per-desktop RootTile). Drop the entry the moment
-    // it's destroyed so a recycled address can't masquerade as already-managed
-    // (which would skip the default-layout teardown below). See the slot's doc.
-    connect(root, &QObject::destroyed, this, &Ki3Tiler::onManagedRootDestroyed,
-            Qt::UniqueConnection);
-
-    // KWin seeds new roots with a default 3-column layout (see
-    // TileManager::readSettings). Tear it down so ki3 starts from an empty
-    // root and fully owns the tree.
-    const QList<Tile *> children = root->childTiles();
-    for (Tile *child : children) {
-        static_cast<CustomTile *>(child)->remove();
-    }
-    root->setLayoutDirection(Tile::LayoutDirection::Horizontal);
-    qCDebug(KWIN_KI3) << "took over root; cleared" << children.size() << "default tiles";
-}
-
-void Ki3Tiler::setGeometryRecursive(CustomTile *tile, const RectF &geom)
-{
-    const RectF old = tile->relativeGeometry();
-    // Set the geometry via the base class to skip CustomTile's neighbour-push +
-    // min-size-abort logic (which fights exact slice assignment near the 0.15
-    // floor). We compute non-overlapping slices ourselves, so the invariant holds.
-    tile->Tile::setRelativeGeometry(geom);
-
-    const QList<Tile *> children = tile->childTiles();
-    if (children.isEmpty() || old.width() <= 0 || old.height() <= 0) {
-        return;
-    }
-    // Remap each child's rect from the old box onto the new box proportionally,
-    // so a nested layout keeps its internal split ratios when its slice resizes.
-    const qreal sx = geom.width() / old.width();
-    const qreal sy = geom.height() / old.height();
-    for (Tile *c : children) {
-        const RectF cg = c->relativeGeometry();
-        const RectF ng(geom.left() + (cg.left() - old.left()) * sx,
-                       geom.top() + (cg.top() - old.top()) * sy,
-                       cg.width() * sx,
-                       cg.height() * sy);
-        setGeometryRecursive(static_cast<CustomTile *>(c), ng);
-    }
-}
-
-void Ki3Tiler::redistributeEvenly(CustomTile *parent)
-{
-    const QList<Tile *> children = parent->childTiles();
-    const int n = children.size();
-    if (n < 2) {
-        return;
-    }
-    const RectF area = parent->relativeGeometry();
-    const bool horizontal = parent->layoutDirection() == Tile::LayoutDirection::Horizontal;
-
-    for (int i = 0; i < n; ++i) {
-        RectF g = area;
-        if (horizontal) {
-            const qreal w = area.width() / n;
-            g.setX(area.left() + i * w);
-            g.setWidth(w);
-        } else {
-            const qreal h = area.height() / n;
-            g.setY(area.top() + i * h);
-            g.setHeight(h);
-        }
-        setGeometryRecursive(static_cast<CustomTile *>(children[i]), g);
-    }
-    qCDebug(KWIN_KI3) << "redistribute" << n << (horizontal ? "H" : "V")
-                      << "->" << [&] {
-        QList<RectF> r;
-        for (Tile *t : children) {
-            r << t->relativeGeometry();
-        }
-        return r;
-    }();
-}
-
-void Ki3Tiler::resyncLeafMapping(RootTile *root)
-{
-    root->visitDescendants([this](Tile *t) {
-        if (t->childCount() != 0 || t->isRoot()) {
-            return;
-        }
-        auto *leaf = static_cast<CustomTile *>(t);
-        for (Window *w : leaf->windows()) {
-            if (m_leafForWindow.contains(w)) {
-                m_leafForWindow[w] = leaf;
-            }
-        }
-    });
-}
-
-CustomTile *Ki3Tiler::firstLeaf(RootTile *root)
-{
-    CustomTile *leaf = nullptr;
-    root->visitDescendants([&leaf](Tile *t) {
-        if (!leaf && t->childCount() == 0 && t != t->rootTile()) {
-            leaf = static_cast<CustomTile *>(t);
-        }
-    });
-    return leaf ? leaf : root;
+    m_tileTree->detachAllManagedWindows();
+    m_tileTree->dropManagedRoots();
 }
 
 void Ki3Tiler::handleWindowAdded(Window *window)
@@ -725,11 +468,11 @@ void Ki3Tiler::handleWindowAdded(Window *window)
     connect(window, &Window::frameGeometryChanged, this, &Ki3Tiler::scheduleBorderRecheck,
             Qt::UniqueConnection);
 
-    if (m_leafForWindow.contains(window)) {
+    if (m_tileTree->isManaged(window)) {
         return;
     }
-    if (!shouldManage(window)) {
-        if (window && isNonTileable(window)) {
+    if (!m_tileTree->shouldManage(window)) {
+        if (window && m_tileTree->isNonTileable(window)) {
             qCDebug(KWIN_KI3) << "not tiling" << window->resourceClass()
                               << "- matched a non-tileable rule";
         } else if (window && !window->isDeleted() && window->desktops().size() != 1) {
@@ -738,49 +481,24 @@ void Ki3Tiler::handleWindowAdded(Window *window)
         }
         return;
     }
-    insertWindow(window);
+    m_tileTree->insertWindow(window);
 }
 
 void Ki3Tiler::handleWindowRemoved(Window *window)
 {
-    m_floatingWindows.remove(window);
+    m_tileTree->removeFloating(window);
     destroyFloatChrome(window);
-    forgetWindow(window);
-    m_originalPresentation.remove(window); // window is gone; drop its baseline
+    m_tileTree->forgetWindow(window);
+    m_tileTree->dropPresentationBaseline(window); // window is gone; drop its baseline
     // Nothing left to resize (e.g. the last window on a desktop just closed):
     // leaving resize mode on would silently do nothing on the next keypress
     // and strand the border indicator's "mode is active" implication.
-    if (m_resizeMode && !currentLeaf()) {
+    if (m_resizeMode && !m_tileTree->currentLeaf()) {
         setResizeMode(false);
     }
     // Deferred: let KWin finish destroying the window before we check whether
     // its desktop became empty (the window may still appear in workspace()->windows()).
     schedulePrune();
-}
-
-CustomTile *Ki3Tiler::currentLeaf() const
-{
-    // Every shortcut-driven action (move/focus/resize/container-mode) resolves
-    // its target through here, so this is where "act on the current desktop
-    // only" is enforced. Switching to an empty desktop leaves KWin's active
-    // window -- and m_lastFocusedLeaf -- pointing at whatever was focused on the
-    // *previous* desktop; returning that here would let a shortcut mutate the
-    // layout on a desktop the user isn't even looking at. Tile::isActive() is
-    // true only for the desktop currently shown on the leaf's output (so this
-    // stays correct with per-output virtual desktops), and it matches the
-    // isOnCurrentDesktop() visibility guard the split/focus/resize indicators
-    // already apply.
-    if (Window *active = workspace()->activeWindow();
-        active != nullptr && active->isOnCurrentDesktop()) {
-        const auto it = m_leafForWindow.constFind(active);
-        if (it != m_leafForWindow.constEnd() && it.value()) {
-            return it.value();
-        }
-    }
-    if (m_lastFocusedLeaf && m_lastFocusedLeaf->isActive()) {
-        return m_lastFocusedLeaf;
-    }
-    return nullptr;
 }
 
 void Ki3Tiler::applyIndicatorColors()
@@ -836,11 +554,7 @@ void Ki3Tiler::applyIndicatorColors()
 
 void Ki3Tiler::updateHeaderPalette()
 {
-    for (auto it = m_tabbed.begin(); it != m_tabbed.end(); ++it) {
-        if (it->header) {
-            it->header->setPalette(m_headerPalette);
-        }
-    }
+    m_tileTree->setHeaderPalette(m_headerPalette);
     for (auto it = m_floatChrome.begin(); it != m_floatChrome.end(); ++it) {
         it->titleBar->setPalette(m_headerPalette);
     }
@@ -872,7 +586,7 @@ void Ki3Tiler::updateSplitIndicator()
     updateTileBorders();
     updateResizeIndicator();
 
-    CustomTile *leaf = currentLeaf();
+    CustomTile *leaf = m_tileTree->currentLeaf();
 
     if (m_splitIndicatorLeaf != leaf) {
         if (m_splitIndicatorLeaf) {
@@ -891,13 +605,13 @@ void Ki3Tiler::updateSplitIndicator()
     Window *window = (leaf && leaf->childCount() == 0 && !leaf->windows().isEmpty())
         ? leaf->windows().constFirst()
         : nullptr;
-    if (!window || !window->isShown() || !window->isOnCurrentDesktop() || leafWindowOccluded(window)) {
+    if (!window || !window->isShown() || !window->isOnCurrentDesktop() || m_tileTree->leafWindowOccluded(window)) {
         m_splitIndicatorWindow->hide();
         return;
     }
 
     const RectF geom = leaf->windowGeometry();
-    const RectF strip = (m_splitDirection == Tile::LayoutDirection::Horizontal)
+    const RectF strip = (m_tileTree->splitDirection() == Tile::LayoutDirection::Horizontal)
         ? RectF(geom.right() - kIndicatorThickness, geom.top(), kIndicatorThickness, geom.height())
         : RectF(geom.left(), geom.bottom() - kIndicatorThickness, geom.width(), kIndicatorThickness);
     m_splitIndicatorWindow->setGeometry(strip.toRect());
@@ -906,7 +620,7 @@ void Ki3Tiler::updateSplitIndicator()
 
 void Ki3Tiler::updateResizeIndicator()
 {
-    CustomTile *leaf = m_resizeMode ? currentLeaf() : nullptr;
+    CustomTile *leaf = m_resizeMode ? m_tileTree->currentLeaf() : nullptr;
 
     if (m_resizeIndicatorLeaf != leaf) {
         if (m_resizeIndicatorLeaf) {
@@ -923,7 +637,7 @@ void Ki3Tiler::updateResizeIndicator()
     Window *window = (leaf && leaf->childCount() == 0 && !leaf->windows().isEmpty())
         ? leaf->windows().constFirst()
         : nullptr;
-    if (!window || !window->isShown() || !window->isOnCurrentDesktop() || leafWindowOccluded(window)) {
+    if (!window || !window->isShown() || !window->isOnCurrentDesktop() || m_tileTree->leafWindowOccluded(window)) {
         for (auto &strip : m_resizeBorder) {
             strip->hide();
         }
@@ -943,12 +657,7 @@ void Ki3Tiler::updateTileBorders()
     // a single "current leaf only" indicator, so the boundary line between two
     // tiles stays put and only *changes colour* as focus moves between them,
     // instead of popping in/out on alternating sides of the gap.
-    QSet<CustomTile *> liveLeaves;
-    for (auto it = m_leafForWindow.constBegin(); it != m_leafForWindow.constEnd(); ++it) {
-        if (CustomTile *leaf = it.value()) {
-            liveLeaves.insert(leaf);
-        }
-    }
+    const QSet<CustomTile *> liveLeaves = m_tileTree->liveLeaves();
 
     // i3-style "smart borders": a lone tile filling its whole output/desktop
     // has no neighbour to delimit, so only draw borders where more than one
@@ -957,11 +666,11 @@ void Ki3Tiler::updateTileBorders()
     // the same (single) desktop, so this is just "how many tiles does this
     // output/desktop have", independent of transient per-window occlusion.
     QHash<Tile *, int> leafCountByRoot;
-    for (CustomTile *leaf : std::as_const(liveLeaves)) {
+    for (CustomTile *leaf : liveLeaves) {
         ++leafCountByRoot[leaf->rootTile()];
     }
 
-    for (CustomTile *leaf : std::as_const(liveLeaves)) {
+    for (CustomTile *leaf : liveLeaves) {
         // Same visibility rule as the split/resize indicators: only a leaf
         // with a presently-shown, unoccluded window on the current desktop
         // has anything to outline.
@@ -969,7 +678,7 @@ void Ki3Tiler::updateTileBorders()
             ? leaf->windows().constFirst()
             : nullptr;
         const bool visible = window && window->isShown() && window->isOnCurrentDesktop()
-            && !leafWindowOccluded(window) && leafCountByRoot.value(leaf->rootTile()) > 1;
+            && !m_tileTree->leafWindowOccluded(window) && leafCountByRoot.value(leaf->rootTile()) > 1;
         if (!visible) {
             if (auto it = m_tileBorders.find(leaf); it != m_tileBorders.end()) {
                 disconnect(it->geometryConn);
@@ -994,7 +703,8 @@ void Ki3Tiler::updateTileBorders()
             m_tileBorders.insert(leaf, std::move(border));
             // Drop the entry the instant the tile is destroyed (e.g. an
             // output unplug tears down its tile tree) so the raw-pointer key
-            // never dangles; see onGroupTileDestroyed() for the same pattern.
+            // never dangles; see TileTreeController::onGroupTileDestroyed()
+            // for the same pattern.
             connect(leaf, &QObject::destroyed, this, &Ki3Tiler::onTileBorderDestroyed,
                     Qt::UniqueConnection);
         }
@@ -1024,10 +734,11 @@ void Ki3Tiler::repositionTileBorder(CustomTile *leaf)
 
     const auto strips = outwardBorderStrips(leaf->windowGeometry());
     // A tab/stack group already has its own header showing the title right
-    // above windowGeometry() (see refreshGroup()); the top strip there would
-    // just be redundant wasted space, so skip it for grouped leaves only.
-    const bool skipTop = m_tabbed.contains(leaf);
-    const QColor &color = (leaf == currentLeaf()) ? m_focusBorderColor : m_unfocusedBorderColor;
+    // above windowGeometry() (see TileTreeController::refreshGroup()); the top
+    // strip there would just be redundant wasted space, so skip it for
+    // grouped leaves only.
+    const bool skipTop = m_tileTree->isGroup(leaf);
+    const QColor &color = (leaf == m_tileTree->currentLeaf()) ? m_focusBorderColor : m_unfocusedBorderColor;
     for (int i = 0; i < 4; ++i) {
         if (i == 0 && skipTop) {
             border.strips[i]->hide();
@@ -1109,408 +820,7 @@ bool Ki3Tiler::resizeModeActive() const
 
 void Ki3Tiler::handleDirectional(Qt::Edge edge)
 {
-    moveFocus(edge);
-}
-
-void Ki3Tiler::moveFocus(Qt::Edge edge)
-{
-    CustomTile *leaf = currentLeaf();
-    if (!leaf) {
-        return;
-    }
-
-    // Inside a tab/stack group, motion along the container's axis cycles the
-    // visible tab (tabbed: left/right; stacked: up/down) instead of leaving it,
-    // unless the active tab is already at that end. There we first try to
-    // leave the group like a normal neighbour move, and only wrap within the
-    // group as a fallback if there's truly nowhere else to go -- mirrors i3's
-    // focus_wrapping: escape outward first, wrap only at a genuine dead end.
-    if (auto it = m_tabbed.constFind(leaf); it != m_tabbed.constEnd()) {
-        const bool horizontal = (edge == Qt::LeftEdge || edge == Qt::RightEdge);
-        const bool alongAxis = (it->mode == ContainerMode::Tabbed) ? horizontal : !horizontal;
-        if (alongAxis) {
-            const int delta = (edge == Qt::RightEdge || edge == Qt::BottomEdge) ? +1 : -1;
-            const bool atBoundary = (delta > 0) ? (it->active >= it->windows.size() - 1) : (it->active <= 0);
-            if (!atBoundary || !leaveLeaf(leaf, edge)) {
-                cycleTab(leaf, delta);
-            }
-            return;
-        }
-    }
-
-    leaveLeaf(leaf, edge);
-}
-
-bool Ki3Tiler::leaveLeaf(CustomTile *leaf, Qt::Edge edge)
-{
-    // Neighbour within the same output's tree.
-    if (CustomTile *target = leaf->nextNonLayoutTileAt(edge)) {
-        if (!target->windows().isEmpty()) {
-            qCDebug(KWIN_KI3) << "focus" << edge << leaf->relativeGeometry() << "->" << target->relativeGeometry();
-            workspace()->activateWindow(target->windows().constFirst());
-        }
-        return true;
-    }
-
-    // At the output edge: cross to the adjacent output in that direction.
-    return moveFocusAcrossOutput(leaf, edge);
-}
-
-bool Ki3Tiler::moveFocusAcrossOutput(CustomTile *leaf, Qt::Edge edge)
-{
-    TileManager *manager = leaf->manager();
-    LogicalOutput *output = manager ? manager->output() : nullptr;
-    if (!output) {
-        return false;
-    }
-    const RectF geom = output->geometryF();
-    const RectF leafGeom = leaf->absoluteGeometry();
-
-    // A probe point just beyond the relevant edge of the current output.
-    QPointF probe = geom.center();
-    switch (edge) {
-    case Qt::LeftEdge:
-        probe = {geom.left() - 1.0, leafGeom.center().y()};
-        break;
-    case Qt::RightEdge:
-        probe = {geom.right() + 1.0, leafGeom.center().y()};
-        break;
-    case Qt::TopEdge:
-        probe = {leafGeom.center().x(), geom.top() - 1.0};
-        break;
-    case Qt::BottomEdge:
-        probe = {leafGeom.center().x(), geom.bottom() + 1.0};
-        break;
-    }
-
-    LogicalOutput *nextOutput = workspace()->outputAt(probe);
-    qCDebug(KWIN_KI3) << "cross-output probe" << edge << probe << "from" << (void *)output
-                      << "-> nextOutput" << (void *)nextOutput;
-    if (!nextOutput || nextOutput == output) {
-        return false;
-    }
-    TileManager *nextManager = workspace()->tileManager(nextOutput);
-    if (!nextManager) {
-        return false;
-    }
-    VirtualDesktop *desktop = VirtualDesktopManager::self()->currentDesktop(nextOutput);
-    RootTile *nextRoot = nextManager->rootTile(desktop);
-    if (!nextRoot) {
-        return false;
-    }
-
-    // Entry point just inside the adjacent output near the shared edge.
-    const RectF ngeom = nextOutput->geometryF();
-    QPointF entry = ngeom.center();
-    switch (edge) {
-    case Qt::LeftEdge:
-        entry = {ngeom.right() - 2.0, std::clamp(leafGeom.center().y(), ngeom.top(), ngeom.bottom() - 1.0)};
-        break;
-    case Qt::RightEdge:
-        entry = {ngeom.left() + 2.0, std::clamp(leafGeom.center().y(), ngeom.top(), ngeom.bottom() - 1.0)};
-        break;
-    case Qt::TopEdge:
-        entry = {std::clamp(leafGeom.center().x(), ngeom.left(), ngeom.right() - 1.0), ngeom.bottom() - 2.0};
-        break;
-    case Qt::BottomEdge:
-        entry = {std::clamp(leafGeom.center().x(), ngeom.left(), ngeom.right() - 1.0), ngeom.top() + 2.0};
-        break;
-    }
-
-    CustomTile *target = qobject_cast<CustomTile *>(nextRoot->pick(entry));
-    if (!target || target->windows().isEmpty()) {
-        target = firstLeaf(nextRoot);
-    }
-    if (target && !target->windows().isEmpty()) {
-        qCDebug(KWIN_KI3) << "focus" << edge << "across output ->" << target->absoluteGeometry();
-        workspace()->activateWindow(target->windows().constFirst());
-        return true;
-    }
-    return false;
-}
-
-void Ki3Tiler::moveWindow(Qt::Edge edge)
-{
-    CustomTile *leaf = currentLeaf();
-    if (!leaf || leaf->windows().isEmpty()) {
-        return;
-    }
-
-    // The window we relocate. Inside a tab/stack group all members share the
-    // tile, so windows().constFirst() need not be the focused one — move the
-    // *active tab* out instead. A plain leaf owns a single window.
-    auto srcGroup = m_tabbed.find(leaf);
-    const bool fromGroup = (srcGroup != m_tabbed.end());
-    Window *self = nullptr;
-    if (fromGroup) {
-        if (srcGroup->windows.isEmpty()) {
-            return;
-        }
-        const int idx = std::clamp(srcGroup->active, 0, int(srcGroup->windows.size()) - 1);
-        self = srcGroup->windows[idx];
-
-        // Motion along the container's axis (tabbed: left/right, stacked:
-        // up/down) reorders the tab in place first, mirroring moveFocus()'s
-        // cycleTab-before-leave semantics -- only once the active tab is
-        // already at that end does the move fall through below to pop it out
-        // toward the neighbouring leaf.
-        const bool horizontal = (edge == Qt::LeftEdge || edge == Qt::RightEdge);
-        const bool alongAxis = (srcGroup->mode == ContainerMode::Tabbed) ? horizontal : !horizontal;
-        if (alongAxis) {
-            const int delta = (edge == Qt::RightEdge || edge == Qt::BottomEdge) ? +1 : -1;
-            const int newIdx = idx + delta;
-            if (newIdx >= 0 && newIdx < srcGroup->windows.size()) {
-                srcGroup->windows.swapItemsAt(idx, newIdx);
-                srcGroup->active = newIdx;
-                qCDebug(KWIN_KI3) << "tab reorder -> active" << newIdx;
-                refreshGroup(leaf);
-                workspace()->activateWindow(self);
-                return;
-            }
-        }
-    } else {
-        self = leaf->windows().constFirst();
-    }
-    if (!self) {
-        return;
-    }
-
-    // The neighbouring leaf in `edge` direction. A group is a single leaf, so
-    // this neighbour is always *outside* the group — moving a tab in any
-    // direction pops it out toward that neighbour (intra-group tab reordering
-    // is a separate follow-up). If the neighbour is itself a group,
-    // placeWindowAt joins it as a new tab (group-to-group move).
-    CustomTile *target = leaf->nextNonLayoutTileAt(edge);
-    if (!target || target->windows().isEmpty()) {
-        // No existing tile to pop into. For a group member this is the common
-        // case, not a true dead end: the tile that would receive it was very
-        // often the window's own former position before it joined the group,
-        // and that slot no longer exists (its leaf was collapsed on the way
-        // in). Mirror i3: still eject, by splitting the group's own tile to
-        // make room, instead of silently doing nothing.
-        if (fromGroup) {
-            ejectGroupMemberViaSplit(leaf, self, edge);
-        }
-        return;
-    }
-    if (self == target->windows().constFirst()) {
-        return;
-    }
-
-    // A real remove+reinsert, not a positional swap: collapse the leaf `self`
-    // leaves behind and re-place it at `target` with the same tab/sibling/split
-    // rules a brand-new window gets (placeWindowAt), so the destination nests
-    // per i3 semantics — e.g. moving a window onto a leaf whose parent runs a
-    // different split direction than m_splitDirection actually splits that
-    // leaf — instead of just trading places with its neighbour.
-    //
-    // The sibling case needs to know which side of `target` to land on: moving
-    // *up*/*left* must insert before target, or (e.g. within an existing
-    // V[top,bottom] pair) the moved window lands back in the exact slot its own
-    // vacated leaf occupied and nothing visibly changes. Derived from target's
-    // *actual* container direction, not just the raw edge, since
-    // nextNonLayoutTileAt() can hand back a tile in a differently-oriented
-    // ancestor container.
-    auto *targetParent = static_cast<CustomTile *>(target->parentTile());
-    const bool insertBefore = targetParent
-        && ((targetParent->layoutDirection() == Tile::LayoutDirection::Horizontal && edge == Qt::LeftEdge)
-            || (targetParent->layoutDirection() == Tile::LayoutDirection::Vertical && edge == Qt::TopEdge));
-
-    CustomTile *parent = static_cast<CustomTile *>(leaf->parentTile());
-    auto *root = static_cast<RootTile *>(leaf->rootTile());
-
-    // Moving out of a group: drop `self` from the group's TabState up front so
-    // our bookkeeping stays consistent once placeWindowAt re-homes the window.
-    // The tile keeps the surviving tabs (refreshed below), or empties out and
-    // is collapsed with every other vacated leaf. srcGroup is not reused after
-    // the erase.
-    if (fromGroup) {
-        srcGroup->windows.removeAll(self);
-        if (srcGroup->windows.isEmpty()) {
-            destroyGroupHeader(leaf); // last tab gone: drop header + clear reserve
-            m_tabbed.erase(srcGroup);
-        } else {
-            srcGroup->active = std::clamp(srcGroup->active, 0, int(srcGroup->windows.size()) - 1);
-        }
-    }
-
-    placeWindowAt(self, target, insertBefore); // manage() evacuates `self` from `leaf` internally
-
-    if (!leaf->isRoot() && leaf->childCount() == 0 && leaf->windows().isEmpty()) {
-        qCDebug(KWIN_KI3) << "move: collapse empty leaf left by" << self->caption();
-        leaf->remove();
-        resyncLeafMapping(root);
-        if (parent && parent->isLayout()) {
-            redistributeEvenly(parent);
-        }
-        updateSplitIndicator();
-    } else if (fromGroup && m_tabbed.contains(leaf)) {
-        refreshGroup(leaf); // group survived with remaining tabs: restack its header
-    }
-    qCDebug(KWIN_KI3) << "move" << edge << self->caption() << (fromGroup ? "(out of group)" : "");
-    workspace()->activateWindow(self);
-}
-
-void Ki3Tiler::ejectGroupMemberViaSplit(CustomTile *leaf, Window *self, Qt::Edge edge)
-{
-    auto srcGroup = m_tabbed.find(leaf);
-    if (srcGroup == m_tabbed.end()) {
-        return;
-    }
-
-    // The group's other surviving tabs; self is still listed in the group at
-    // this point (moveWindow() only drops it once a target leaf is found,
-    // which didn't happen here). If self was the group's only member there's
-    // nothing to split off from and nowhere for it to have come from either.
-    QList<Window *> remaining;
-    for (const QPointer<Window> &w : srcGroup->windows) {
-        if (w && w != self) {
-            remaining.append(w);
-        }
-    }
-    if (remaining.isEmpty()) {
-        return;
-    }
-
-    // Split perpendicular to the edge: Left/Right make a new horizontal pair,
-    // Top/Bottom a vertical one. CustomTile::split() always puts the
-    // "before" half (left/top) at index 0 -- reusing `leaf` itself when the
-    // parent already runs the same direction, or two brand-new tiles when it
-    // has to nest a new sub-layout (see the CustomTile::split()/placeWindowAt
-    // comments). Either way we treat both results as opaque and reattach
-    // every window explicitly afterwards, exactly like placeWindowAt()'s own
-    // split fallback does.
-    const Tile::LayoutDirection direction =
-        (edge == Qt::LeftEdge || edge == Qt::RightEdge) ? Tile::LayoutDirection::Horizontal
-                                                        : Tile::LayoutDirection::Vertical;
-    const QList<CustomTile *> created = leaf->split(direction);
-    if (created.size() != 2) {
-        qCWarning(KWIN_KI3) << "eject-from-group: unexpected split result, size" << created.size();
-        return;
-    }
-    const bool selfLeadsGroup = (edge == Qt::LeftEdge || edge == Qt::TopEdge);
-    CustomTile *ejectedSlot = selfLeadsGroup ? created.first() : created.last();
-    CustomTile *groupSlot = selfLeadsGroup ? created.last() : created.first();
-
-    for (Window *w : remaining) {
-        attachWindow(w, groupSlot);
-        m_leafForWindow[w] = groupSlot;
-    }
-    if (groupSlot != leaf) {
-        // The group moved to a freshly created tile: migrate its TabState
-        // (header included) to the new key. `leaf` itself is now either the
-        // ejected window's plain tile (case 1, see CustomTile::split()) or a
-        // defunct non-leaf layout node (case 2) -- neither should keep
-        // driving the header, so drop its geometry-tracking connection and
-        // any stale reserve it's still carrying from being the group's home
-        // a moment ago (destroyGroupHeader() would also erase the m_tabbed
-        // entry we're about to move ourselves, so do its other two jobs
-        // directly instead of calling it). refreshGroup() only wires this
-        // connection when it creates a *new* header, so with the header
-        // carried over unchanged we have to reconnect it to groupSlot here.
-        disconnect(leaf, &Tile::windowGeometryChanged, this, &Ki3Tiler::onGroupGeometryChanged);
-        leaf->setHeaderReserve(0.0);
-
-        TabState st = *srcGroup;
-        st.windows.clear();
-        for (Window *w : remaining) {
-            st.windows.append(w);
-        }
-        st.active = std::clamp(st.active, 0, int(st.windows.size()) - 1);
-        m_tabbed.erase(srcGroup);
-        m_tabbed.insert(groupSlot, st);
-        connect(groupSlot, &Tile::windowGeometryChanged, this, &Ki3Tiler::onGroupGeometryChanged, Qt::UniqueConnection);
-        connect(groupSlot, &QObject::destroyed, this, &Ki3Tiler::onGroupTileDestroyed, Qt::UniqueConnection);
-    } else {
-        srcGroup->windows.clear();
-        for (Window *w : remaining) {
-            srcGroup->windows.append(w);
-        }
-        srcGroup->active = std::clamp(srcGroup->active, 0, int(srcGroup->windows.size()) - 1);
-    }
-
-    // ejectedSlot is now a plain leaf, never a group. If split() reused
-    // `leaf` as its object (case 1, ejecting toward the "before" i.e.
-    // left/top half -- see CustomTile::split()), it's still carrying the
-    // header reserve from when it *was* the group's tile: left uncleared,
-    // the window's content area stays shrunk by a header strip that's no
-    // longer drawn there (the reported bug). A no-op when ejectedSlot is a
-    // brand-new tile, which already defaults to 0.
-    ejectedSlot->setHeaderReserve(0.0);
-
-    attachWindow(self, ejectedSlot);
-    m_leafForWindow[self] = ejectedSlot;
-    self->setNoBorder(true);
-    m_lastFocusedLeaf = ejectedSlot;
-
-    qCDebug(KWIN_KI3) << "move" << edge << self->caption() << "(ejected from group via split)";
-    refreshGroup(groupSlot);
-    updateSplitIndicator();
-    workspace()->activateWindow(self);
-}
-
-void Ki3Tiler::resizeActive(Qt::Orientation orientation, qreal deltaPixels)
-{
-    CustomTile *leaf = currentLeaf();
-    if (!leaf) {
-        return;
-    }
-    // Resize towards a neighbour if one exists on that side, else the other side.
-    if (orientation == Qt::Horizontal) {
-        if (leaf->nextTileAt(Qt::RightEdge)) {
-            leaf->resizeByPixels(deltaPixels, Qt::RightEdge);
-        } else if (leaf->nextTileAt(Qt::LeftEdge)) {
-            leaf->resizeByPixels(-deltaPixels, Qt::LeftEdge);
-        }
-    } else {
-        if (leaf->nextTileAt(Qt::BottomEdge)) {
-            leaf->resizeByPixels(deltaPixels, Qt::BottomEdge);
-        } else if (leaf->nextTileAt(Qt::TopEdge)) {
-            leaf->resizeByPixels(-deltaPixels, Qt::TopEdge);
-        }
-    }
-    qCDebug(KWIN_KI3) << "resize" << orientation << deltaPixels << "->" << leaf->relativeGeometry();
-}
-
-void Ki3Tiler::setSplitDirection(Tile::LayoutDirection direction)
-{
-    m_splitDirection = direction;
-    qCInfo(KWIN_KI3) << "split direction ->"
-                     << (m_splitDirection == Tile::LayoutDirection::Horizontal ? "horizontal" : "vertical");
-    updateSplitIndicator();
-}
-
-void Ki3Tiler::toggleContainerLayout()
-{
-    CustomTile *leaf = currentLeaf();
-    if (!leaf) {
-        return;
-    }
-
-    // The focused leaf is itself a tabbed/stacked group: collapse it back to a
-    // plain split, mirroring setContainerMode()'s same-key-toggles-back rule.
-    if (m_tabbed.contains(leaf)) {
-        untabContainer(leaf);
-        return;
-    }
-
-    auto *parent = static_cast<CustomTile *>(leaf->parentTile());
-    if (!parent || !parent->isLayout()) {
-        return;
-    }
-    // Floating containers have no h/v orientation to flip.
-    if (parent->layoutDirection() != Tile::LayoutDirection::Horizontal
-        && parent->layoutDirection() != Tile::LayoutDirection::Vertical) {
-        return;
-    }
-
-    const auto newDirection = (parent->layoutDirection() == Tile::LayoutDirection::Horizontal)
-        ? Tile::LayoutDirection::Vertical
-        : Tile::LayoutDirection::Horizontal;
-    parent->setLayoutDirection(newDirection);
-    redistributeEvenly(parent);
-    qCInfo(KWIN_KI3) << "container layout ->"
-                     << (newDirection == Tile::LayoutDirection::Horizontal ? "horizontal" : "vertical");
+    m_tileTree->moveFocus(edge);
 }
 
 void Ki3Tiler::closeActiveWindow()
@@ -1538,233 +848,14 @@ void Ki3Tiler::spawnTerminal()
 void Ki3Tiler::handleWindowActivated(Window *window)
 {
     // Track the focused leaf so the *next* window splits the right container.
-    // The freshly added window isn't in the map yet when its activation fires,
-    // so this won't clobber the previous focus before insertWindow() runs.
-    auto it = m_leafForWindow.constFind(window);
-    if (it != m_leafForWindow.constEnd() && it.value()) {
-        m_lastFocusedLeaf = it.value();
-    }
+    m_tileTree->noteWindowActivated(window);
     updateSplitIndicator();
     // Reposition/hide group headers (covers desktop switches, which activate a
     // window on the newly shown desktop).
-    refreshAllGroups();
+    m_tileTree->refreshAllGroups();
     // A floating window's chrome border tracks focus the same way; see
     // updateFloatChromeBorder().
     updateAllFloatChromeBorders();
-}
-
-void Ki3Tiler::notePresentationBaseline(Window *window)
-{
-    if (!window || m_originalPresentation.contains(window)) {
-        return;
-    }
-    m_originalPresentation.insert(window, PresentationState{window->decorationPolicy(), window->keepAbove()});
-}
-
-void Ki3Tiler::restoreDecorationPolicy(Window *window)
-{
-    if (!window || window->isDeleted()) {
-        return;
-    }
-    auto it = m_originalPresentation.constFind(window);
-    window->setDecorationPolicy(it != m_originalPresentation.constEnd()
-                                    ? it->decorationPolicy
-                                    : DecorationPolicy::PreferredByClient);
-}
-
-void Ki3Tiler::restoreKeepAbove(Window *window)
-{
-    if (!window || window->isDeleted()) {
-        return;
-    }
-    auto it = m_originalPresentation.constFind(window);
-    window->setKeepAbove(it != m_originalPresentation.constEnd() && it->keepAbove);
-}
-
-void Ki3Tiler::attachWindow(Window *window, CustomTile *leaf)
-{
-    // Snapshot the pre-ki3 decoration/keep-above state the first time this
-    // window becomes ki3-owned -- every path that hands a window to ki3
-    // (fresh insert, tab join, sibling split, move) funnels through here.
-    notePresentationBaseline(window);
-    leaf->manage(window);
-    // Tile::manage() wires geometry (window->requestTile) only when the leaf's
-    // desktop is currently shown on its output; onto a hidden destination it
-    // skips it -- and for a window it evacuated from another tile it actively
-    // clears the tile (tile.cpp:444-448). That path is hit routinely by a
-    // cross-output move onto a background workspace, leaving the window untiled
-    // (overlapping at its raw geometry) even once the desktop is shown. Re-request
-    // the tile explicitly so the association survives; a no-op when manage()
-    // already set it (active desktop) or if the window isn't actually managed.
-    if (!window->isDeleted() && leaf->windows().contains(window)
-        && window->requestedTile() != leaf) {
-        window->requestTile(leaf);
-    }
-}
-
-void Ki3Tiler::insertWindow(Window *window, LogicalOutput *outputHint)
-{
-    RootTile *root = rootForWindow(window, outputHint);
-    if (!root) {
-        qCWarning(KWIN_KI3) << "no root tile for" << window;
-        return;
-    }
-    ensureManaged(root);
-
-    // First window on this root fills it.
-    if (root->childCount() == 0 && root->windows().isEmpty()) {
-        attachWindow(window, root);
-        m_leafForWindow[window] = root;
-        m_lastFocusedLeaf = root;
-        window->setNoBorder(true); // i3-style: tiled windows never show their own title bar
-        qCDebug(KWIN_KI3) << "insert (root):" << window->caption() << "->" << root->windowGeometry();
-        updateSplitIndicator();
-        return;
-    }
-
-    // Pick the target leaf: the last focused leaf if it's in this root tree,
-    // otherwise the first available leaf.
-    CustomTile *target = nullptr;
-    if (m_lastFocusedLeaf && m_lastFocusedLeaf->rootTile() == root && m_lastFocusedLeaf->childCount() == 0) {
-        target = m_lastFocusedLeaf;
-    } else {
-        target = firstLeaf(root);
-    }
-
-    placeWindowAt(window, target);
-}
-
-void Ki3Tiler::placeWindowAt(Window *window, CustomTile *target, bool insertBefore)
-{
-    // If the chosen container is a tab/stack group, the window joins it as a
-    // new tab rather than splitting the tree.
-    if (auto it = m_tabbed.find(target); it != m_tabbed.end()) {
-        attachWindow(window, target);
-        it->windows.append(window);
-        it->active = it->windows.size() - 1;
-        m_leafForWindow[window] = target;
-        m_lastFocusedLeaf = target;
-        window->setNoBorder(true); // hide its own title bar; ki3's tab bar shows instead
-        qCDebug(KWIN_KI3) << "insert (tab):" << window->caption() << "tabs now" << it->windows.size();
-        refreshGroup(target);
-        updateSplitIndicator();
-        return;
-    }
-
-    // i3 behaviour: if the target leaf already lives in a layout running in the
-    // current split direction, add the window as a *sibling* and rebalance all
-    // of them evenly (1:1:1...), rather than nesting + halving the target cell
-    // (which would give 2:1:1). Only nest when the direction differs.
-    auto *parent = static_cast<CustomTile *>(target->parentTile());
-    if (parent && parent->isLayout() && parent->layoutDirection() == m_splitDirection
-        && target->childCount() == 0) {
-        const int position = insertBefore ? target->row() : target->row() + 1;
-        CustomTile *forNew = parent->createChildAt(target->relativeGeometry(),
-                                                   m_splitDirection, position);
-        attachWindow(window, forNew);
-        m_leafForWindow[window] = forNew;
-        m_lastFocusedLeaf = forNew;
-        window->setNoBorder(true);
-        redistributeEvenly(parent);
-        qCDebug(KWIN_KI3) << "insert (sibling):" << window->caption()
-                          << "siblings now" << parent->childCount()
-                          << "at position" << position
-                          << "->" << forNew->windowGeometry();
-        updateSplitIndicator();
-        return;
-    }
-
-    // Capture the windows on the target *before* splitting: split() changes the
-    // tile geometry, which makes KWin re-home the existing window on its own. We
-    // re-assign them explicitly afterwards so our bookkeeping stays authoritative.
-    const QList<Window *> existing = target->windows();
-
-    const QList<CustomTile *> created = target->split(m_splitDirection);
-    if (created.size() != 2) {
-        qCWarning(KWIN_KI3) << "unexpected split result, size" << created.size();
-        attachWindow(window, target);
-        m_leafForWindow[window] = target;
-        m_lastFocusedLeaf = target;
-        window->setNoBorder(true);
-        updateSplitIndicator();
-        return;
-    }
-
-    CustomTile *forOld = created.first();
-    CustomTile *forNew = created.last();
-
-    // If the target became a layout, move its existing window(s) into the new
-    // first child so every window stays on a leaf.
-    if (forOld != target) {
-        for (Window *w : existing) {
-            attachWindow(w, forOld);
-            m_leafForWindow[w] = forOld;
-        }
-    }
-
-    attachWindow(window, forNew);
-    m_leafForWindow[window] = forNew;
-    m_lastFocusedLeaf = forNew;
-    window->setNoBorder(true);
-    qCDebug(KWIN_KI3) << "insert (split):" << window->caption() << "->" << forNew->windowGeometry();
-    updateSplitIndicator();
-}
-
-void Ki3Tiler::forgetWindow(Window *window)
-{
-    auto it = m_leafForWindow.find(window);
-    if (it == m_leafForWindow.end()) {
-        return;
-    }
-    QPointer<CustomTile> tile = it.value();
-    m_leafForWindow.erase(it);
-    if (m_lastFocusedLeaf == tile) {
-        m_lastFocusedLeaf = nullptr;
-    }
-    if (!tile) {
-        return;
-    }
-    // Leaving the tile tree: restore whatever decoration policy it had before
-    // ki3 first touched it (see PresentationState), not a hardcoded default --
-    // it may have been borderless already (user choice or a WindowRule).
-    restoreDecorationPolicy(window);
-
-    // Tab/stack group member: drop it from the group. As long as at least one
-    // tab remains, the leaf stays put (still owns the survivors) — only refresh
-    // which tab shows. If it was the last, fall through to collapse the leaf.
-    if (auto ti = m_tabbed.find(tile); ti != m_tabbed.end()) {
-        tile->forget(window);
-        ti->windows.removeAll(window);
-        if (!ti->windows.isEmpty()) {
-            ti->active = std::clamp(ti->active, 0, int(ti->windows.size()) - 1);
-            m_lastFocusedLeaf = tile;
-            refreshGroup(tile);
-            updateSplitIndicator();
-            return;
-        }
-        destroyGroupHeader(tile); // last tab gone: drop header + clear reserve
-        m_tabbed.erase(ti);
-    }
-
-    // Detach the window if still attached, then collapse the empty leaf.
-    // CustomTile::remove() only stretches the immediate prev/next neighbour into
-    // the freed space (customtile.cpp:290-324); i3 instead shares it across all
-    // remaining siblings, so we rebalance the parent evenly afterwards.
-    QPointer<CustomTile> parent = static_cast<CustomTile *>(tile->parentTile());
-    auto *root = static_cast<RootTile *>(tile->rootTile());
-    tile->forget(window);
-    if (!tile->isRoot() && tile->childCount() == 0 && tile->windows().isEmpty()) {
-        qCDebug(KWIN_KI3) << "collapse empty leaf left by" << window->caption();
-        tile->remove();
-        // remove() may have promoted a single-child layout, migrating its window
-        // into the parent tile and invalidating our leaf mapping; repair it
-        // before redistributing so a later close finds the right leaf.
-        resyncLeafMapping(root);
-        if (parent && parent->isLayout()) {
-            redistributeEvenly(parent);
-        }
-    }
-    updateSplitIndicator();
 }
 
 } // namespace KWin
