@@ -40,7 +40,9 @@ void Ki3SolidOverlay::paintEvent(QPaintEvent *)
 
 void Ki3SolidOverlay::mousePressEvent(QMouseEvent *event)
 {
-    if (m_acceptsInput) {
+    // Only the primary button starts a resize; a right/middle click here
+    // would otherwise be silently hijacked into one (review finding L1).
+    if (m_acceptsInput && event->button() == Qt::LeftButton) {
         Q_EMIT pressed(event->globalPosition());
     }
 }
@@ -91,7 +93,11 @@ void Ki3FloatTitleBar::paintEvent(QPaintEvent *)
 
 void Ki3FloatTitleBar::mousePressEvent(QMouseEvent *event)
 {
-    Q_EMIT dragRequested(event->globalPosition());
+    // Only the primary button starts a drag (review finding L1); a
+    // right/middle click on the bar should do nothing, not move the window.
+    if (event->button() == Qt::LeftButton) {
+        Q_EMIT dragRequested(event->globalPosition());
+    }
 }
 
 Ki3Header::Ki3Header()
@@ -174,6 +180,11 @@ void Ki3Header::paintEvent(QPaintEvent *)
 
 void Ki3Header::mousePressEvent(QMouseEvent *event)
 {
+    // Only the primary button activates a tab (review finding L1); a
+    // right/middle click shouldn't change the active tab.
+    if (event->button() != Qt::LeftButton) {
+        return;
+    }
     const int index = indexAt(event->position());
     if (index >= 0) {
         Q_EMIT tabActivated(index);
