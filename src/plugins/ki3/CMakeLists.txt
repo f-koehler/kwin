@@ -16,7 +16,9 @@ target_sources(ki3 PRIVATE
     ki3rules.cpp
     ki3tiler.cpp
     ki3session.cpp
-    ki3groups.cpp
+    ki3tiletreecontroller.cpp
+    ki3tiletreenavigation.cpp
+    ki3tiletreegroups.cpp
     ki3workspaces.cpp
     ki3float.cpp
 )

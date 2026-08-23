@@ -26,18 +26,18 @@ void Ki3Tiler::toggleFloating()
     if (!window) {
         return;
     }
-    if (m_floatingWindows.contains(window)) {
+    if (m_tileTree->isFloating(window)) {
         // Re-tile it.
-        m_floatingWindows.remove(window);
+        m_tileTree->removeFloating(window);
         destroyFloatChrome(window);
-        restoreKeepAbove(window); // back to whatever it was before ki3 floated it
+        m_tileTree->restoreKeepAbove(window); // back to whatever it was before ki3 floated it
         qCDebug(KWIN_KI3) << "unfloat" << window->caption();
-        insertWindow(window);
-    } else if (m_leafForWindow.contains(window)) {
+        m_tileTree->insertWindow(window);
+    } else if (m_tileTree->isManaged(window)) {
         // Detach from the tree; it keeps its current geometry and floats.
-        m_floatingWindows.insert(window);
+        m_tileTree->addFloating(window);
         qCDebug(KWIN_KI3) << "float" << window->caption();
-        forgetWindow(window); // restores its pre-ki3 decoration policy; createFloatChrome() below re-hides it
+        m_tileTree->forgetWindow(window); // restores its pre-ki3 decoration policy; createFloatChrome() below re-hides it
         window->requestTile(nullptr);
         window->setNoBorder(true); // ki3 draws its own title bar instead of the native SSD
         // i3/sway: floating windows always stay above tiled ones, even across

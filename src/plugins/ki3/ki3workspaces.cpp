@@ -110,9 +110,8 @@ QList<int> Ki3Tiler::desktopNumbersForOutput(const QString &outputName) const
 QStringList Ki3Tiler::tiledWindowGeometries() const
 {
     QStringList out;
-    for (auto it = m_leafForWindow.constBegin(); it != m_leafForWindow.constEnd(); ++it) {
-        Window *window = it.key();
-        if (!window || window->isDeleted() || !it.value()) {
+    for (Window *window : m_tileTree->managedWindows()) {
+        if (!window || window->isDeleted()) {
             continue;
         }
         const QString outputName = window->output() ? window->output()->name() : QStringLiteral("?");
@@ -137,7 +136,7 @@ QStringList Ki3Tiler::tiledWindowGeometries() const
 QStringList Ki3Tiler::floatingWindowGeometries() const
 {
     QStringList out;
-    for (Window *window : m_floatingWindows) {
+    for (Window *window : m_tileTree->floatingWindows()) {
         if (!window || window->isDeleted()) {
             continue;
         }
@@ -498,8 +497,8 @@ LogicalOutput *Ki3Tiler::outputForDesktop(VirtualDesktop *desktop, Window *exclu
         // isDeleted() checked first, deliberately, before isInternal()/isClient()
         // (both virtual): a Window in KWin's transient "deleted" (closing-
         // animation) state can have a vtable that's unsafe to dispatch through
-        // right then -- see shouldManage()'s doc comment (ki3tiler.cpp) for the
-        // gdb-confirmed crash this same pattern caused during output hot-unplug.
+        // right then -- see TileTreeController::shouldManage()'s doc comment for
+        // the gdb-confirmed crash this same pattern caused during output hot-unplug.
         // isDeleted() itself is the one non-virtual accessor here, safe
         // regardless.
         if (w != exclude && !w->isDeleted() && !w->isInternal() && w->isClient()
@@ -526,7 +525,7 @@ void Ki3Tiler::focusOutput(LogicalOutput *output)
         // indicator is "shown" and "on every desktop" whenever it's visible,
         // and being topmost it would otherwise steal focus from a real window.
         // isDeleted() first -- see outputForDesktop()'s comment above and
-        // shouldManage()'s (ki3tiler.cpp) for why, against isInternal()/
+        // TileTreeController::shouldManage()'s for why, against isInternal()/
         // isClient() (both virtual) right after it in this same check.
         if (w && !w->isDeleted() && !w->isInternal() && w->isClient() && w->isNormalWindow()
             && w->isShown() && w->isOnOutput(output) && w->isOnDesktop(desktop)) {
@@ -589,15 +588,14 @@ void Ki3Tiler::teardownGroupsOnOutput(LogicalOutput *output)
         }
         root->visitDescendants([this, &groupsHere](Tile *t) {
             auto *custom = static_cast<CustomTile *>(t);
-            if (m_tabbed.contains(custom)) {
+            if (m_tileTree->isGroup(custom)) {
                 groupsHere.append(custom);
             }
         });
     }
     for (CustomTile *tile : groupsHere) {
         qCDebug(KWIN_KI3) << "output going away: tearing down group on" << (void *)tile;
-        destroyGroupHeader(tile);
-        m_tabbed.remove(tile);
+        m_tileTree->dropGroup(tile);
     }
 }
 
@@ -616,34 +614,11 @@ void Ki3Tiler::reconcileOutputs()
 {
     m_reconcilePending = false;
     qCDebug(KWIN_KI3) << "reconcile outputs:" << workspace()->outputs().size() << "output(s)";
-    purgeStaleRoots();
+    m_tileTree->purgeStaleRoots();
     enforceUniqueDesktops();
     retileHomelessWindows();
     ensureSaneFocus();
-    refreshAllGroups();
-}
-
-void Ki3Tiler::purgeStaleRoots()
-{
-    // A removed output's TileManager (and its RootTiles) are destroyed, leaving
-    // dangling raw pointers in m_managedRoots. Keep only roots that still belong
-    // to a live TileManager. Pointer identity comparison never derefs the dead
-    // ones, so this is safe.
-    QSet<RootTile *> valid;
-    const auto outputs = workspace()->outputs();
-    const auto desktops = VirtualDesktopManager::self()->desktops();
-    for (LogicalOutput *output : outputs) {
-        TileManager *tm = workspace()->tileManager(output);
-        if (!tm) {
-            continue;
-        }
-        for (VirtualDesktop *desktop : desktops) {
-            if (RootTile *root = tm->rootTile(desktop)) {
-                valid.insert(root);
-            }
-        }
-    }
-    m_managedRoots.intersect(valid);
+    m_tileTree->refreshAllGroups();
 }
 
 void Ki3Tiler::enforceUniqueDesktops()
@@ -703,26 +678,25 @@ void Ki3Tiler::retileHomelessWindows()
 {
     const auto windows = workspace()->windows();
     for (Window *window : windows) {
-        if (!shouldManage(window)) {
+        if (!m_tileTree->shouldManage(window)) {
             // No longer manageable (e.g. its output vanished and rules changed);
             // drop any stale bookkeeping.
-            if (m_leafForWindow.contains(window)) {
-                forgetWindow(window);
+            if (m_tileTree->isManaged(window)) {
+                m_tileTree->forgetWindow(window);
             }
             continue;
         }
-        auto it = m_leafForWindow.find(window);
-        if (it == m_leafForWindow.end()) {
+        if (!m_tileTree->isManaged(window)) {
             // Relocated onto an output we weren't tracking it on -> tile it.
-            insertWindow(window);
+            m_tileTree->insertWindow(window);
             continue;
         }
-        CustomTile *leaf = it.value();
-        RootTile *want = rootForWindow(window);
+        CustomTile *leaf = m_tileTree->leafFor(window);
+        RootTile *want = m_tileTree->rootForWindow(window);
         if (!leaf || (want && leaf->rootTile() != want)) {
             // Tile destroyed by an unplug, or window moved to another tree.
-            forgetWindow(window);
-            insertWindow(window);
+            m_tileTree->forgetWindow(window);
+            m_tileTree->insertWindow(window);
         }
     }
 }
@@ -777,8 +751,8 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
     // A floating window isn't in the tile tree, but i3/sway still let it follow
     // to the target workspace — it just stays floating there instead of being
     // re-tiled. Everything else must be a window ki3 actually tiles.
-    const bool floating = m_floatingWindows.contains(window);
-    if (!floating && !shouldManage(window)) {
+    const bool floating = m_tileTree->isFloating(window);
+    if (!floating && !m_tileTree->shouldManage(window)) {
         return;
     }
     VirtualDesktop *desktop = getOrCreateDesktop(number);
@@ -795,7 +769,7 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
         home = outputShowingDesktop(desktop);
     }
     if (!floating) {
-        forgetWindow(window);
+        m_tileTree->forgetWindow(window);
     }
     window->setDesktops({desktop});
     if (home && home != window->output()) {
@@ -813,7 +787,7 @@ void Ki3Tiler::moveActiveToWorkspace(int number)
         // unrelated re-home surfaced it. `home` may be null (target desktop has no
         // home yet); then insertWindow falls back to window->output(), which is
         // correct because no cross-output move happened.
-        insertWindow(window, home);
+        m_tileTree->insertWindow(window, home);
     }
     schedulePrune(); // the source desktop may now be empty
     // The target desktop just gained a home output (or the source lost one); the
