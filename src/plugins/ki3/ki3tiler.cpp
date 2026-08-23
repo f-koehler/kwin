@@ -674,6 +674,7 @@ void Ki3Tiler::handleWindowRemoved(Window *window)
     m_floatingWindows.remove(window);
     destroyFloatChrome(window);
     forgetWindow(window);
+    m_originalPresentation.remove(window); // window is gone; drop its baseline
     // Nothing left to resize (e.g. the last window on a desktop just closed):
     // leaving resize mode on would silently do nothing on the next keypress
     // and strand the border indicator's "mode is active" implication.
@@ -1480,8 +1481,40 @@ void Ki3Tiler::handleWindowActivated(Window *window)
     updateAllFloatChromeBorders();
 }
 
+void Ki3Tiler::notePresentationBaseline(Window *window)
+{
+    if (!window || m_originalPresentation.contains(window)) {
+        return;
+    }
+    m_originalPresentation.insert(window, PresentationState{window->decorationPolicy(), window->keepAbove()});
+}
+
+void Ki3Tiler::restoreDecorationPolicy(Window *window)
+{
+    if (!window || window->isDeleted()) {
+        return;
+    }
+    auto it = m_originalPresentation.constFind(window);
+    window->setDecorationPolicy(it != m_originalPresentation.constEnd()
+                                    ? it->decorationPolicy
+                                    : DecorationPolicy::PreferredByClient);
+}
+
+void Ki3Tiler::restoreKeepAbove(Window *window)
+{
+    if (!window || window->isDeleted()) {
+        return;
+    }
+    auto it = m_originalPresentation.constFind(window);
+    window->setKeepAbove(it != m_originalPresentation.constEnd() && it->keepAbove);
+}
+
 void Ki3Tiler::attachWindow(Window *window, CustomTile *leaf)
 {
+    // Snapshot the pre-ki3 decoration/keep-above state the first time this
+    // window becomes ki3-owned -- every path that hands a window to ki3
+    // (fresh insert, tab join, sibling split, move) funnels through here.
+    notePresentationBaseline(window);
     leaf->manage(window);
     // Tile::manage() wires geometry (window->requestTile) only when the leaf's
     // desktop is currently shown on its output; onto a hidden destination it
@@ -1619,9 +1652,10 @@ void Ki3Tiler::forgetWindow(Window *window)
     if (!tile) {
         return;
     }
-    if (!window->isDeleted()) {
-        window->setNoBorder(false); // leaving the tile tree: restore its own title bar
-    }
+    // Leaving the tile tree: restore whatever decoration policy it had before
+    // ki3 first touched it (see PresentationState), not a hardcoded default --
+    // it may have been borderless already (user choice or a WindowRule).
+    restoreDecorationPolicy(window);
 
     // Tab/stack group member: drop it from the group. As long as at least one
     // tab remains, the leaf stays put (still owns the survivors) — only refresh

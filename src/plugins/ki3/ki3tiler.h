@@ -34,6 +34,7 @@ class LogicalOutput;
 class RootTile;
 class VirtualDesktop;
 class Window;
+enum class DecorationPolicy;
 
 // Shared thickness (device-independent px) of every leaf-edge overlay: the
 // split-direction hint, the resize-mode border, and the tile border (see
@@ -222,6 +223,21 @@ private:
         // untab (i3/sway prev_split_layout).
         Tile::LayoutDirection prevSplit = Tile::LayoutDirection::Horizontal;
         std::shared_ptr<Ki3Header> header; // the title bar (created lazily)
+    };
+
+    /**
+     * A window's decoration policy and keep-above state as they were before
+     * ki3 first touched them. Captured once per window (notePresentationBaseline())
+     * so tiling/floating/untiling and eventual plugin teardown can restore
+     * exactly this instead of clobbering it to a hardcoded default -- e.g. a
+     * client that was already borderless (DecorationPolicy::None) via user
+     * choice or a WindowRule before ki3 ever tiled it must come back
+     * borderless when it floats or leaves the tree, not PreferredByClient.
+     */
+    struct PresentationState
+    {
+        DecorationPolicy decorationPolicy;
+        bool keepAbove = false;
     };
 
     /**
@@ -664,6 +680,30 @@ private:
     void forgetWindow(Window *window);
 
     /**
+     * Snapshot @p window's current decoration policy and keep-above state into
+     * m_originalPresentation, if not already recorded. Call this at the single
+     * point where a previously-untracked window first becomes ki3-owned
+     * (attachWindow()) so the snapshot always reflects the pre-ki3 state, never
+     * a state ki3 itself already produced.
+     */
+    void notePresentationBaseline(Window *window);
+
+    /**
+     * Restore @p window's decoration policy to the value notePresentationBaseline()
+     * recorded (DecorationPolicy::PreferredByClient if none was ever recorded).
+     * Used when a window leaves the tile tree (forgetWindow()) and during
+     * plugin teardown.
+     */
+    void restoreDecorationPolicy(Window *window);
+
+    /**
+     * Restore @p window's keep-above state to the value notePresentationBaseline()
+     * recorded (false if none was ever recorded). Used when un-floating and
+     * during plugin teardown.
+     */
+    void restoreKeepAbove(Window *window);
+
+    /**
      * Build (or, if already present, just leave alone) the floating chrome
      * for @p window: reflows its geometry to carve out title-bar space, then
      * creates the title bar + resize strips, wires their input signals to
@@ -733,6 +773,13 @@ private:
 
     // Authoritative mapping of the windows we manage to their leaf tile.
     QHash<Window *, QPointer<CustomTile>> m_leafForWindow;
+
+    // Pre-ki3 decoration/keep-above state, one entry per window ki3 has ever
+    // tiled or floated; see PresentationState and notePresentationBaseline().
+    // Entries are only ever dropped in handleWindowRemoved() and plugin
+    // teardown -- a window cycling between tiled/floating keeps the same
+    // baseline throughout.
+    QHash<Window *, PresentationState> m_originalPresentation;
 
     // The leaf that should receive the next window (last focused tiled leaf).
     QPointer<CustomTile> m_lastFocusedLeaf;
