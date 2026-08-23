@@ -11,8 +11,11 @@
 #include "ki3header.h"
 #include "ki3tiler.h"
 
+#include "core/output.h"
 #include "window.h"
 #include "workspace.h"
+
+#include <algorithm>
 
 namespace KWin
 {
@@ -51,12 +54,27 @@ void Ki3Tiler::createFloatChrome(Window *window)
         return;
     }
 
-    // Grow the window's footprint upward by the title bar height (like a real
-    // decoration adding chrome outside the client area) rather than shrinking
-    // its content; the vacated strip above is where the bar gets drawn.
+    // Grow the window's total footprint (title bar + client) downward by the
+    // title bar height (like a real decoration adding chrome outside the
+    // client area) rather than shrinking its content: push the client down by
+    // barHeight, and the vacated strip above it is where the bar gets drawn.
     const qreal barHeight = Ki3FloatTitleBar::barHeight();
     const RectF geom = window->frameGeometry();
-    window->moveResize(RectF(geom.left(), geom.top() + barHeight, geom.width(), geom.height()));
+    qreal newTop = geom.top() + barHeight;
+    if (LogicalOutput *output = window->output()) {
+        // Keep the whole footprint on-screen: the title bar mustn't end up
+        // above the output's top edge, and the client's bottom mustn't end up
+        // past its bottom edge -- otherwise a window already touching either
+        // edge would grow off-screen (see review finding M3). If the window is
+        // taller than the output has room for, prefer keeping the title bar
+        // reachable (it's the only way to move/close the window) over keeping
+        // the bottom edge on-screen.
+        const RectF area = output->geometryF();
+        const qreal minTop = area.top() + barHeight;
+        const qreal maxTop = area.bottom() - geom.height();
+        newTop = (minTop <= maxTop) ? std::clamp(newTop, minTop, maxTop) : minTop;
+    }
+    window->moveResize(RectF(geom.left(), newTop, geom.width(), geom.height()));
 
     FloatChrome chrome;
     chrome.titleBar = std::make_shared<Ki3FloatTitleBar>();
