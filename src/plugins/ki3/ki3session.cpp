@@ -16,8 +16,9 @@
 // again, and switching back into ki3 re-applies ki3's. See ki3-PLAN.md for
 // the full write-up (dated entry alongside this file's introduction).
 
+#include "ki3sessionguard.h"
+
 #include "ki3_logging.h"
-#include "ki3tiler.h"
 
 #include "virtualdesktops.h"
 
@@ -54,7 +55,7 @@ const QStringList &kwinrcBackupGroups()
 
 } // namespace
 
-void Ki3Tiler::backupSessionStateIfNeeded()
+void Ki3SessionGuard::backupIfNeeded()
 {
     KSharedConfigPtr ki3Config = KSharedConfig::openConfig(QStringLiteral("ki3rc"));
     KConfigGroup backup = ki3Config->group(QStringLiteral("SessionBackup"));
@@ -85,14 +86,14 @@ void Ki3Tiler::backupSessionStateIfNeeded()
     qCInfo(KWIN_KI3) << "session backup taken";
 }
 
-bool Ki3Tiler::ki3OwnsAction(const QString &actionUniqueName) const
+bool Ki3SessionGuard::ki3OwnsAction(const QString &actionUniqueName) const
 {
     // Every ki3 QAction's objectName (== its KGlobalAccel action id) is
     // "ki3_..." -- see registerShortcuts()/registerResizeModeShortcuts().
     return actionUniqueName.startsWith(QLatin1String("ki3_"));
 }
 
-void Ki3Tiler::captureShortcutOwnerIfNeeded(const QKeySequence &key)
+void Ki3SessionGuard::noteShortcutGrab(const QKeySequence &key)
 {
     if (!m_captureShortcutOwners || key.isEmpty()) {
         return;
@@ -153,7 +154,7 @@ void Ki3Tiler::captureShortcutOwnerIfNeeded(const QKeySequence &key)
                       << "keys" << keyStrings;
 }
 
-void Ki3Tiler::restoreSessionStateOnCleanExit()
+void Ki3SessionGuard::restoreOnCleanExit()
 {
     KSharedConfigPtr ki3Config = KSharedConfig::openConfig(QStringLiteral("ki3rc"));
     KConfigGroup backup = ki3Config->group(QStringLiteral("SessionBackup"));
