@@ -570,6 +570,15 @@ bool Ki3Tiler::shouldManage(Window *window) const
         && !window->isSpecialWindow()
         && window->isResizable()
         && window->output()
+        // i3 treats sticky (all-desktops) windows as floating, never tiled;
+        // apply the same policy to sticky *and* multi-desktop windows here.
+        // rootForWindow() associates a tiled window with exactly one root
+        // (window->desktops().constFirst()), so a window visible on several
+        // desktops at once has no stable single root to belong to -- picking
+        // "the first" (or, for all-desktops, "whichever is currently shown")
+        // is not a real semantic and would apply the wrong tile geometry
+        // across desktop switches (review finding M4).
+        && window->desktops().size() == 1
         && !isNonTileable(window)
         && !m_floatingWindows.contains(window);
 }
@@ -722,6 +731,9 @@ void Ki3Tiler::handleWindowAdded(Window *window)
         if (window && isNonTileable(window)) {
             qCDebug(KWIN_KI3) << "not tiling" << window->resourceClass()
                               << "- matched a non-tileable rule";
+        } else if (window && !window->isDeleted() && window->desktops().size() != 1) {
+            qCDebug(KWIN_KI3) << "not tiling" << window->resourceClass()
+                              << "- sticky/multi-desktop window, treating as floating (i3 policy)";
         }
         return;
     }
