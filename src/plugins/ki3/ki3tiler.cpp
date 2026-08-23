@@ -475,7 +475,66 @@ void Ki3Tiler::disableOverviewHotCorner()
 
 Ki3Tiler::~Ki3Tiler()
 {
+    teardownManagedState();
     restoreSessionStateOnCleanExit();
+}
+
+void Ki3Tiler::teardownManagedState()
+{
+    // Floating windows: drop ki3's chrome and hand back keep-above/decoration.
+    const auto floatingWindows = m_floatingWindows;
+    for (Window *window : floatingWindows) {
+        destroyFloatChrome(window);
+        restoreKeepAbove(window);
+        restoreDecorationPolicy(window);
+    }
+    m_floatingWindows.clear();
+
+    // Tiled windows: restore decoration and detach from whatever tile they're
+    // still on. A null QPointer here means that tile's root already died
+    // (e.g. an unplugged output) without a reconcile pass catching it -- the
+    // window itself is still live and still needs its decoration restored,
+    // there's just nothing left to call forget() on.
+    const auto tiledWindows = m_leafForWindow.keys();
+    for (Window *window : tiledWindows) {
+        restoreDecorationPolicy(window);
+        if (CustomTile *leaf = m_leafForWindow.value(window)) {
+            leaf->forget(window); // clears the tile's window list *and* the
+                                  // window's requested tile so remove() below
+                                  // can't re-home it into a sibling
+        }
+    }
+    m_leafForWindow.clear();
+    m_lastFocusedLeaf = nullptr;
+
+    // Tab/stack group headers must go before their tiles do.
+    const auto groupTiles = m_tabbed.keys();
+    for (CustomTile *tile : groupTiles) {
+        destroyGroupHeader(tile);
+    }
+    m_tabbed.clear();
+
+    // Drop ki3's own split structure from every surviving root so the next
+    // load (or KWin's own default layout) starts clean instead of piling new
+    // splits on top of stale ones. Every leaf's windows are already forgotten
+    // above, so remove() has nothing left to migrate; a leaf that a sibling's
+    // removal already collapsed (see CustomTile::remove()'s single-child
+    // promotion) is simply parentless by the time we reach it, and remove()
+    // on an already-detached tile is a no-op.
+    purgeStaleRoots();
+    const auto roots = m_managedRoots;
+    for (RootTile *root : roots) {
+        QList<CustomTile *> leaves;
+        root->visitDescendants([&leaves](Tile *t) {
+            if (t->childCount() == 0 && !t->isRoot()) {
+                leaves.append(static_cast<CustomTile *>(t));
+            }
+        });
+        for (CustomTile *leaf : leaves) {
+            leaf->remove();
+        }
+    }
+    m_managedRoots.clear();
 }
 
 bool Ki3Tiler::isNonTileable(const Window *window) const
