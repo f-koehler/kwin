@@ -8,6 +8,7 @@
 
 #include "ki3decorationcontroller.h"
 #include "ki3sessionguard.h"
+#include "ki3shortcutcontroller.h"
 #include "ki3tiletreecontroller.h"
 #include "ki3workspacecontroller.h"
 #include "plugin.h"
@@ -29,18 +30,22 @@ class Window;
  * represent ki3's per-output model — can show/drive per-output desktops
  * without linking against KWin internals.
  *
- * As of the M1 refactor's Phase 1-4, this class delegates the tile tree,
+ * As of the M1 refactor's Phase 1-5, this class delegates the tile tree,
  * tab/stack group model, and floating-window set to TileTreeController
  * (m_tileTree); tile-border/split/resize-indicator/floating-chrome rendering
  * to DecorationController (m_decoration); the per-output virtual-desktop
  * model, output reconciliation, and most D-Bus-introspection query bodies to
- * WorkspaceController (m_workspace); and reversible-session config
+ * WorkspaceController (m_workspace); global shortcut registration/dispatch
+ * to ShortcutController (m_shortcuts); and reversible-session config
  * backup/restore to Ki3SessionGuard (m_sessionGuard) -- see
  * `~/.claude/plans/toasty-fluttering-kitten.md` and the matching
- * ki3-PLAN.md entries. What remains here: plugin lifecycle, global
- * shortcuts, and the D-Bus surface itself (every Q_SCRIPTABLE slot backed by
- * WorkspaceController is a one-line forwarder, since the registered /Ki3
- * object must stay this class).
+ * ki3-PLAN.md entries. What remains here, per that plan's original target
+ * shape: plugin lifecycle (construction/destruction order of the five
+ * controllers), cross-controller orchestration (handleWindowAdded() and
+ * friends, toggleFloating() -- a genuine two-controller sequence with no
+ * single-controller home), and the D-Bus surface itself (every
+ * Q_SCRIPTABLE slot backed by WorkspaceController is a one-line forwarder,
+ * since the registered /Ki3 object must stay this class).
  */
 class Ki3Tiler : public Plugin
 {
@@ -50,6 +55,19 @@ class Ki3Tiler : public Plugin
 public:
     explicit Ki3Tiler();
     ~Ki3Tiler() override;
+
+    /**
+     * Toggle the active window between tiled and floating. A genuine
+     * two-controller sequence (TileTreeController::isFloating/forgetWindow/
+     * insertWindow + DecorationController::createFloatChrome/
+     * destroyFloatChrome) with no single-controller home, so it stays here
+     * rather than moving into ShortcutController with the rest of the
+     * shortcut dispatch. Public so ShortcutController's float-toggle
+     * shortcut can call it directly -- see its class doc comment for why
+     * that's the one deliberate exception to "no controller calls back into
+     * Ki3Tiler".
+     */
+    void toggleFloating();
 
 public Q_SLOTS:
     /** Output names (matches Qt/QScreen::name(), e.g. "DP-1") known to KWin. */
@@ -86,7 +104,7 @@ public Q_SLOTS:
     /** D-Bus wrapper for WorkspaceController::moveActiveToWorkspace(), for the ki3-pager plasmoid. */
     Q_SCRIPTABLE void dbusMoveActiveToWorkspace(int number);
 
-    /** Whether Meta+R resize mode (see toggleResizeMode()) is currently active. */
+    /** Whether Meta+R resize mode (see ShortcutController::setResizeMode()) is currently active. */
     Q_SCRIPTABLE bool resizeModeActive() const;
 
     /**
@@ -183,62 +201,6 @@ private:
      */
     void teardownManagedState();
 
-    /** Register global shortcuts. */
-    void registerShortcuts();
-
-    /**
-     * Register the bare (no-modifier) h/j/k/l, arrow, and Escape/Return
-     * shortcuts used *only* while resize mode is active (see setResizeMode()).
-     * Created once with no bound keys — KGlobalAccel would otherwise grab e.g.
-     * plain "h" globally forever, breaking normal typing everywhere. Their
-     * QKeySequences are (re)applied/cleared by setResizeMode() itself, which
-     * is the closest approximation available to i3/sway's real keyboard grab
-     * without KWin plugins having access to one.
-     */
-    void registerResizeModeShortcuts();
-
-    /**
-     * Disable the Overview effect's default top-left screen-edge trigger.
-     * It fires where ki3's own split/resize indicators and stacked/tabbed
-     * title bars live, is easy to hit by accident while tiling, and its
-     * default Meta+W shortcut is taken over for the tabbed layout in
-     * registerShortcuts() anyway.
-     */
-    void disableOverviewHotCorner();
-
-    /**
-     * Toggle resize mode (i3/sway "mode resize", `Meta+R`): while active, bare
-     * h/j/k/l/arrow keys (no modifier) resize the focused leaf, Escape/Return
-     * leave the mode, and every other ki3 shortcut is inert — matching i3/sway,
-     * where entering resize mode grabs the keyboard so nothing else fires until
-     * the mode is explicitly left. Press `Meta+R` again (always live, see
-     * registerShortcuts()) to leave the mode from outside it too.
-     */
-    void toggleResizeMode();
-
-    /**
-     * Enter/leave resize mode; shared by toggleResizeMode(), the bare Escape/
-     * Return exit shortcuts (see registerResizeModeShortcuts()), and the
-     * auto-exit in handleWindowRemoved() (closing the last window leaves
-     * nothing to resize). No-op if @p active already matches the current
-     * state, so the auto-exit doesn't spam the log/D-Bus signal on every
-     * window close. Binds/unbinds the bare-key resize shortcuts to approximate
-     * i3/sway's keyboard grab — see registerResizeModeShortcuts().
-     */
-    void setResizeMode(bool active);
-
-    /** Move keyboard focus in @p edge direction (bound to Meta+h/j/k/l/arrows). */
-    void handleDirectional(Qt::Edge edge);
-
-    /** Toggle the active window between tiled and floating. */
-    void toggleFloating();
-
-    /** Launch a terminal emulator (i3-style Meta+Return). */
-    void spawnTerminal();
-
-    /** Close the active window (i3/sway-style Meta+Shift+Q). */
-    void closeActiveWindow();
-
     // Reversible-session backup/restore of the real kwinrc groups + global
     // shortcuts ki3 overwrites, and their restoration on clean exit. See
     // ki3sessionguard.h / ki3session.cpp. Constructed first in Ki3Tiler's
@@ -261,19 +223,10 @@ private:
     // on, read-only, alongside m_tileTree).
     std::unique_ptr<WorkspaceController> m_workspace;
 
-    // Whether Meta+R resize mode is active; see toggleResizeMode().
-    bool m_resizeMode = false;
-
-    // One resize-mode-only shortcut (see registerResizeModeShortcuts()): the
-    // action to trigger, and the keys setResizeMode() binds it to on entry /
-    // clears on exit. Kept as data (not just QActions) since KGlobalAccel's
-    // setShortcut() needs the key list re-supplied on every rebind.
-    struct ResizeModeShortcut
-    {
-        QAction *action;
-        QList<QKeySequence> keys;
-    };
-    QList<ResizeModeShortcut> m_resizeModeActions;
+    // Global shortcut registration/dispatch -- see ShortcutController's own
+    // doc comment. Constructed last (the thinnest controller, consumer of
+    // everything else, per the plan's extraction order).
+    std::unique_ptr<ShortcutController> m_shortcuts;
 };
 
 } // namespace KWin

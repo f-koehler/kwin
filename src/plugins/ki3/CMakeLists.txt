@@ -22,6 +22,7 @@ target_sources(ki3 PRIVATE
     ki3decorationcontroller.cpp
     ki3decorationfloat.cpp
     ki3workspacecontroller.cpp
+    ki3shortcutcontroller.cpp
 )
 
 target_link_libraries(ki3 PRIVATE
