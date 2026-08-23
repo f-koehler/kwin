@@ -108,6 +108,22 @@ public Q_SLOTS:
     Q_SCRIPTABLE QStringList tiledWindowGeometries() const;
 
     /**
+     * Test/introspection: one entry per window ki3 currently floats, each
+     * "<output>|<x>,<y>,<w>,<h>" using the window's *actual* applied frame
+     * geometry (the client area ki3 moved down to make room for its title
+     * bar -- see createFloatChrome()), not the chrome's geometry. Lets a test
+     * assert the client stayed within the output's usable area after
+     * floating near an edge (review finding M3).
+     */
+    Q_SCRIPTABLE QStringList floatingWindowGeometries() const;
+
+    /** Test/introspection: the active window's current decoration policy -- true if borderless. */
+    Q_SCRIPTABLE bool activeWindowNoBorder() const;
+
+    /** Test/introspection: the active window's current keep-above state. */
+    Q_SCRIPTABLE bool activeWindowKeepAbove() const;
+
+    /**
      * Test-only: hot-plug a virtual output and return its name (empty on
      * failure). No-op unless the env var KI3_TEST_HOOKS is set, so it can never
      * spawn a phantom screen in a real session. Used by the regression suite to
@@ -118,6 +134,23 @@ public Q_SLOTS:
 
     /** Test-only counterpart: unplug the most recently added test output. */
     Q_SCRIPTABLE QString dbusRemoveTestOutput();
+
+    /**
+     * Test-only: directly set the active window's decoration policy/keep-above/
+     * all-desktops state, bypassing ki3 entirely -- simulating state a
+     * WindowRule or the user set *before* ki3 ever touched the window, so a
+     * test can prove ki3 restores exactly that instead of a hardcoded default
+     * (review finding M2) and that a sticky window is excluded from
+     * auto-tiling (review finding M4). No-op (returns false) unless
+     * KI3_TEST_HOOKS is set, or if there is no active window.
+     */
+    Q_SCRIPTABLE bool dbusSetActiveWindowNoBorder(bool noBorder);
+
+    /** Test-only counterpart of dbusSetActiveWindowNoBorder() for keep-above. */
+    Q_SCRIPTABLE bool dbusSetActiveWindowKeepAbove(bool keepAbove);
+
+    /** Test-only counterpart of dbusSetActiveWindowNoBorder() for all-desktops (sticky). */
+    Q_SCRIPTABLE bool dbusSetActiveWindowOnAllDesktops(bool onAllDesktops);
 
 Q_SIGNALS:
     /** Emitted whenever any output's current desktop changes. */

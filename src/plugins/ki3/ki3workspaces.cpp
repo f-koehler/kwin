@@ -134,6 +134,37 @@ QStringList Ki3Tiler::tiledWindowGeometries() const
     return out;
 }
 
+QStringList Ki3Tiler::floatingWindowGeometries() const
+{
+    QStringList out;
+    for (Window *window : m_floatingWindows) {
+        if (!window || window->isDeleted()) {
+            continue;
+        }
+        const QString outputName = window->output() ? window->output()->name() : QStringLiteral("?");
+        const QRectF g = window->frameGeometry();
+        out << QStringLiteral("%1|%2,%3,%4,%5")
+                   .arg(outputName)
+                   .arg(int(g.x()))
+                   .arg(int(g.y()))
+                   .arg(int(g.width()))
+                   .arg(int(g.height()));
+    }
+    return out;
+}
+
+bool Ki3Tiler::activeWindowNoBorder() const
+{
+    Window *window = workspace()->activeWindow();
+    return window && window->noBorder();
+}
+
+bool Ki3Tiler::activeWindowKeepAbove() const
+{
+    Window *window = workspace()->activeWindow();
+    return window && window->keepAbove();
+}
+
 QString Ki3Tiler::dbusAddTestOutput()
 {
     if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
@@ -167,6 +198,50 @@ QString Ki3Tiler::dbusRemoveTestOutput()
     kwinApp()->outputBackend()->removeVirtualOutput(out);
     qCDebug(KWIN_KI3) << "test hotplug: removed an output";
     return QStringLiteral("removed");
+}
+
+bool Ki3Tiler::dbusSetActiveWindowNoBorder(bool noBorder)
+{
+    if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
+        return false;
+    }
+    Window *window = workspace()->activeWindow();
+    if (!window) {
+        return false;
+    }
+    window->setNoBorder(noBorder);
+    return true;
+}
+
+bool Ki3Tiler::dbusSetActiveWindowKeepAbove(bool keepAbove)
+{
+    if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
+        return false;
+    }
+    Window *window = workspace()->activeWindow();
+    if (!window) {
+        return false;
+    }
+    window->setKeepAbove(keepAbove);
+    return true;
+}
+
+bool Ki3Tiler::dbusSetActiveWindowOnAllDesktops(bool onAllDesktops)
+{
+    if (qEnvironmentVariableIsEmpty("KI3_TEST_HOOKS")) {
+        return false;
+    }
+    Window *window = workspace()->activeWindow();
+    if (!window) {
+        return false;
+    }
+    window->setOnAllDesktops(onAllDesktops);
+    // In a real session this would eventually be picked up by whatever next
+    // reconcile pass runs (output/desktop-topology change -- see the M4 PLAN
+    // entry). Force one now so a test can observe the effect deterministically
+    // without waiting on an unrelated topology event.
+    scheduleReconcile();
+    return true;
 }
 
 void Ki3Tiler::dbusSwitchToWorkspace(int number)
