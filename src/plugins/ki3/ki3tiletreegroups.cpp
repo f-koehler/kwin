@@ -320,8 +320,8 @@ void TileTreeController::destroyGroupHeader(CustomTile *tile)
 void TileTreeController::dropGroup(CustomTile *tile)
 {
     // Combines destroyGroupHeader() with the m_tabbed erase, for a caller (see
-    // Ki3Tiler::teardownGroupsOnOutput()) that needs both done together and has
-    // no other reason to reach into the group model.
+    // WorkspaceController::teardownGroupsOnOutput()) that needs both done
+    // together and has no other reason to reach into the group model.
     destroyGroupHeader(tile);
     m_tabbed.remove(tile);
 }
