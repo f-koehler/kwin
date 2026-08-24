@@ -203,7 +203,12 @@ void TileTreeController::moveWindow(Qt::Edge edge)
         // make room, instead of silently doing nothing.
         if (fromGroup) {
             ejectGroupMemberViaSplit(leaf, self, edge);
+            return;
         }
+        // A plain leaf with nowhere left in this output's tree: try the
+        // adjacent output in that direction, mirroring leaveLeaf()'s
+        // same-output-then-adjacent-output order for focus.
+        moveWindowAcrossOutput(leaf, self, edge);
         return;
     }
     if (self == target->windows().constFirst()) {
@@ -261,6 +266,73 @@ void TileTreeController::moveWindow(Qt::Edge edge)
         refreshGroup(leaf); // group survived with remaining tabs: restack its header
     }
     qCDebug(KWIN_KI3) << "move" << edge << self->caption() << (fromGroup ? "(out of group)" : "");
+    workspace()->activateWindow(self);
+}
+
+void TileTreeController::moveWindowAcrossOutput(CustomTile *leaf, Window *self, Qt::Edge edge)
+{
+    TileManager *manager = leaf->manager();
+    LogicalOutput *output = manager ? manager->output() : nullptr;
+    if (!output) {
+        return;
+    }
+    const RectF geom = output->geometryF();
+    const RectF leafGeom = leaf->absoluteGeometry();
+
+    // Same edge probe as moveFocusAcrossOutput(): a point just beyond the
+    // relevant edge of the current output, in real screen-geometry terms --
+    // works for any physical arrangement (side by side, one above the
+    // other, ...), not just left/right.
+    QPointF probe = geom.center();
+    switch (edge) {
+    case Qt::LeftEdge:
+        probe = {geom.left() - 1.0, leafGeom.center().y()};
+        break;
+    case Qt::RightEdge:
+        probe = {geom.right() + 1.0, leafGeom.center().y()};
+        break;
+    case Qt::TopEdge:
+        probe = {leafGeom.center().x(), geom.top() - 1.0};
+        break;
+    case Qt::BottomEdge:
+        probe = {leafGeom.center().x(), geom.bottom() + 1.0};
+        break;
+    }
+
+    LogicalOutput *nextOutput = workspace()->outputAt(probe);
+    qCDebug(KWIN_KI3) << "move cross-output probe" << edge << probe << "from" << (void *)output
+                      << "-> nextOutput" << (void *)nextOutput;
+    if (!nextOutput || nextOutput == output) {
+        return;
+    }
+    // Fail fast, before mutating anything, if the target output turns out to
+    // have no tile tree or no current desktop -- same guard order as
+    // moveFocusAcrossOutput().
+    if (!workspace()->tileManager(nextOutput)) {
+        return;
+    }
+    VirtualDesktop *desktop = VirtualDesktopManager::self()->currentDesktop(nextOutput);
+    if (!desktop) {
+        return;
+    }
+
+    // Same "detach, retarget desktop/output, reattach" shape as
+    // WorkspaceController::moveActiveToWorkspace() -- the other place a
+    // tiled window crosses outputs. forgetWindow() collapses the leaf left
+    // behind and restores self's pre-ki3 decoration baseline; insertWindow()
+    // re-tiles it into the target (output, desktop) tree, using the same
+    // empty-root/last-focused-leaf/first-leaf policy a brand-new window gets.
+    forgetWindow(self);
+    self->setDesktops({desktop});
+    if (nextOutput != self->output()) {
+        self->sendToOutput(nextOutput);
+    }
+    // Pass nextOutput explicitly: sendToOutput() above only updates
+    // self->output() once the client acks the configure, so insertWindow()'s
+    // own window->output() lookup could still see the old output here.
+    insertWindow(self, nextOutput);
+
+    qCDebug(KWIN_KI3) << "move" << edge << self->caption() << "across output ->" << (void *)nextOutput;
     workspace()->activateWindow(self);
 }
 
