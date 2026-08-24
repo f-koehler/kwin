@@ -127,7 +127,8 @@ public:
      *
      * @p outputHint, when non-null, overrides window->output() for choosing
      * the target tree -- required right after a cross-output move, see
-     * `Ki3Tiler::moveActiveToWorkspace()`.
+     * `WorkspaceController::moveActiveToWorkspace()` and
+     * `moveWindowAcrossOutput()`.
      */
     void insertWindow(Window *window, LogicalOutput *outputHint = nullptr);
 
@@ -323,6 +324,14 @@ private:
 
     /** Move focus from @p leaf to the adjacent output in @p edge direction. */
     bool moveFocusAcrossOutput(CustomTile *leaf, Qt::Edge edge);
+
+    /**
+     * Move @p self (currently at @p leaf) to the adjacent output in @p edge
+     * direction when moveWindow() found no neighbour tile within the current
+     * output's tree -- the moveWindow() counterpart to moveFocusAcrossOutput().
+     * No-op if there is no output in that direction.
+     */
+    void moveWindowAcrossOutput(CustomTile *leaf, Window *self, Qt::Edge edge);
 
     /**
      * Eject @p self (a member of the group at @p leaf) toward @p edge when
