@@ -161,16 +161,26 @@ QStringList WorkspacePriorityModel::availableOutputsForDesktop(int desktopNumber
 
 void WorkspacePriorityModel::reload()
 {
+    // QDBusInterface::isValid() only checks that the *service* exists and
+    // the service/path/interface strings are syntactically valid -- it does
+    // NOT verify the object path actually exists remotely (confirmed: it
+    // stays true against a bare "org.kde.KWin" service with no "/Ki3" object
+    // registered at all, i.e. any KWin session, ki3 or not). "org.kde.KWin"
+    // is provided by every KWin session regardless of whether the ki3 plugin
+    // is loaded, so that check alone made `available` report true in a
+    // plain, non-ki3 Plasma session too -- exactly the case this property
+    // exists to detect. Actually calling a real method and checking the
+    // *reply* is the only reliable way to tell.
     QDBusInterface iface(s_service, s_path, s_iface, QDBusConnection::sessionBus());
+    const QDBusReply<QStringList> reply = iface.call(QStringLiteral("outputNames"));
+
     const bool wasAvailable = m_available;
-    m_available = iface.isValid();
+    m_available = reply.isValid();
     if (m_available != wasAvailable) {
         Q_EMIT availableChanged();
     }
 
-    const QStringList outputNames = m_available
-        ? QDBusReply<QStringList>(iface.call(QStringLiteral("outputNames"))).value()
-        : QStringList();
+    const QStringList outputNames = m_available ? reply.value() : QStringList();
     if (outputNames != m_allOutputNames) {
         m_allOutputNames = outputNames;
         Q_EMIT allOutputNamesChanged();

@@ -440,6 +440,29 @@ void TileTreeController::reloadConfig()
     m_gap = loadGap();
     m_outerGap = loadOuterGap();
     applyPaddingToManagedRoots();
+
+    // Re-check every already-open window against the freshly-reloaded rules:
+    // shouldManage() depends on m_nonTileableRules, but until now nothing
+    // ever re-ran it for a window already sitting in whichever state it was
+    // in when it first opened, so editing rules (via ki3rc or the KCM) had no
+    // live effect -- only future windows honoured the change. Only windows
+    // whose shouldManage() result actually flipped do anything here;
+    // everything else is a no-op through isManaged()/shouldManage() already
+    // agreeing. Manually-floated windows are never touched: shouldManage()
+    // excludes them regardless of rules, via isFloating(), so they can never
+    // match the `!managed && !isFloating(window) && wanted` branch below.
+    for (Window *window : workspace()->windows()) {
+        if (!window || window->isDeleted() || !window->isClient()) {
+            continue;
+        }
+        const bool managed = isManaged(window);
+        const bool wanted = shouldManage(window);
+        if (managed && !wanted) {
+            forgetWindow(window);
+        } else if (!managed && !isFloating(window) && wanted) {
+            insertWindow(window);
+        }
+    }
 }
 
 void TileTreeController::attachWindow(Window *window, CustomTile *leaf)

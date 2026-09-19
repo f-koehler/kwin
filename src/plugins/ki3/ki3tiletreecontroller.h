@@ -172,8 +172,13 @@ public:
      * them: swaps m_nonTileableRules, and re-applies both gaps to every
      * already-managed root's padding/outerPadding (Tile::setPadding()/
      * setOuterPadding() no-op when unchanged and already live-resize any
-     * managed windows -- see tile.cpp). Called from Ki3Tiler::reloadConfig()
-     * after the KCM saves.
+     * managed windows -- see tile.cpp). Also re-checks every currently-open
+     * window's shouldManage() against the freshly-reloaded rules and
+     * inserts/forgets it if that flipped, so an edited rule actually
+     * tiles/untiles an already-open window immediately instead of only
+     * affecting windows opened after the change. Called from
+     * Ki3Tiler::reloadConfig() after the KCM (or the ki3-toggle-tiling app)
+     * saves.
      */
     void reloadConfig();
 
