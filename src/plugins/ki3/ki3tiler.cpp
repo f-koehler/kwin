@@ -283,4 +283,11 @@ bool Ki3Tiler::dbusSetActiveWindowOnAllDesktops(bool onAllDesktops)
     return m_workspace->setActiveWindowOnAllDesktops(onAllDesktops);
 }
 
+void Ki3Tiler::reloadConfig()
+{
+    m_tileTree->reloadConfig();
+    m_workspace->loadWorkspaceOutputPreferences();
+    m_decoration->reloadConfig();
+}
+
 } // namespace KWin

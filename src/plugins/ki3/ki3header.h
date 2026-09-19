@@ -13,11 +13,15 @@
 namespace KWin
 {
 
-// Shared thickness (device-independent px) of every leaf-edge overlay: the
+// Default thickness (device-independent px) of every leaf-edge overlay: the
 // split-direction hint, the resize-mode border, the tile border (see
-// ki3tiler.cpp's outwardBorderStrips()), and a tab/stack group's header,
-// which lines up with the same leaf's left/right border strips instead of
-// falling short of them (see refreshGroup() in ki3tiletreegroups.cpp).
+// ki3decorationcontroller.cpp's outwardBorderStrips()), and a tab/stack
+// group's header, which lines up with the same leaf's left/right border
+// strips instead of falling short of them (see refreshGroup() in
+// ki3tiletreegroups.cpp). Overridable at runtime via ki3rc [General]
+// BorderThickness -- see DecorationController::applyIndicatorColors() (the
+// live source of truth) and TileTreeController::setIndicatorThickness(); this
+// constant now only supplies the initial/default value.
 static constexpr qreal kIndicatorThickness = 3.0;
 
 /**

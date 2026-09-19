@@ -1,0 +1,8 @@
+{
+    "KPlugin": {
+        "Name": "ki3",
+        "Description": "Configure ki3's i3/sway-style tiling: non-tileable window rules, tile gap, border thickness, and per-desktop output priority",
+        "Icon": "preferences-system-windows"
+    },
+    "X-KDE-System-Settings-Parent-Category": "windowmanagement"
+}

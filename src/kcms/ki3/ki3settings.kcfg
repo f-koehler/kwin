@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+      http://www.kde.org/standards/kcfg/1.0/kcfg.xsd" >
+  <kcfgfile name="ki3rc"/>
+  <group name="General">
+    <entry name="nonTileableClasses" key="NonTileableClasses" type="StringList">
+      <label>Window classes that should never be tiled (matched against WM_CLASS, wildcards allowed)</label>
+      <default/>
+    </entry>
+    <entry name="nonTileableTitles" key="NonTileableTitles" type="StringList">
+      <label>Window titles that should never be tiled (wildcards allowed)</label>
+      <default/>
+    </entry>
+    <entry name="gap" key="Gap" type="Int">
+      <label>Extra gap between tiles and around the screen edge, in pixels, on top of the space the border itself needs (2x border thickness)</label>
+      <default>4</default>
+      <min>0</min>
+      <max>64</max>
+    </entry>
+    <entry name="borderThickness" key="BorderThickness" type="Int">
+      <label>Thickness of tile borders and the split/resize indicators, in pixels</label>
+      <default>3</default>
+      <min>1</min>
+      <max>16</max>
+    </entry>
+  </group>
+</kcfg>

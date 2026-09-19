@@ -114,6 +114,15 @@ public:
      */
     void teardownFloatChrome();
 
+    /**
+     * Re-read `ki3rc [General] BorderThickness` and redraw every border/
+     * indicator/header with the new value (reuses applyIndicatorColors()'s
+     * own refresh calls, and pushes the new thickness to TileTreeController
+     * via setIndicatorThickness() so tab/stack headers stay aligned). Called
+     * from Ki3Tiler::reloadConfig() after the KCM saves.
+     */
+    void reloadConfig();
+
 private:
     /**
      * ki3's own chrome for a floating window, replacing its native SSD: a
@@ -237,6 +246,13 @@ private:
     // Ki3Tiler's constructor, destroyed last). Every call into it is a
     // read-only query -- see the class doc comment above.
     TileTreeController *m_tileTree;
+
+    // Thickness (logical px) of every border/split/resize-indicator strip,
+    // from ki3rc [General] BorderThickness (default: kIndicatorThickness --
+    // see ki3header.h). Read at construction and on reloadConfig(); also
+    // pushed to m_tileTree via setIndicatorThickness() so tab/stack headers
+    // stay aligned with it.
+    qreal m_indicatorThickness = kIndicatorThickness;
 
     // Whether Meta+R resize mode is active; pushed in by
     // ShortcutController::setResizeMode() via setResizeModeActive().

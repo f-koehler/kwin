@@ -16,12 +16,24 @@
 #include "window.h"
 #include "workspace.h"
 
+#include <KConfigGroup>
+#include <KSharedConfig>
+
 namespace KWin
 {
+
+// ki3rc [General] Gap, or Tile's own hardcoded default (tile.h) if unset/invalid.
+static qreal loadGap()
+{
+    const KConfigGroup group =
+        KSharedConfig::openConfig(QStringLiteral("ki3rc"))->group(QStringLiteral("General"));
+    return group.readEntry("Gap", 4);
+}
 
 TileTreeController::TileTreeController(QObject *parent)
     : QObject(parent)
     , m_nonTileableRules(loadNonTileableRules())
+    , m_gap(loadGap())
 {
 }
 
@@ -230,6 +242,14 @@ void TileTreeController::ensureManaged(RootTile *root)
     connect(root, &QObject::destroyed, this, &TileTreeController::onManagedRootDestroyed,
             Qt::UniqueConnection);
 
+    // KWin's own Tile::anchors() (tile.cpp) reports no tiled xdg-toplevel edges
+    // at all once padding > 0 -- see the 2026-09-19 ki3-PLAN.md entry -- so this
+    // gap is a deliberate i3-gaps-style tradeoff, not a bug; still apply the
+    // user's configured value here (ki3rc [General] Gap, read in the
+    // constructor/reloadConfig()) rather than leaving Tile's own 4.0 default.
+    // effectivePadding(), not the raw m_gap -- see its doc comment.
+    root->setPadding(effectivePadding());
+
     // KWin seeds new roots with a default 3-column layout (see
     // TileManager::readSettings). Tear it down so ki3 starts from an empty
     // root and fully owns the tree.
@@ -378,6 +398,34 @@ void TileTreeController::setHeaderPalette(const Ki3HeaderPalette &palette)
             it->header->setPalette(m_headerPalette);
         }
     }
+}
+
+void TileTreeController::setIndicatorThickness(qreal thickness)
+{
+    if (qFuzzyCompare(m_indicatorThickness, thickness)) {
+        return;
+    }
+    m_indicatorThickness = thickness;
+    // effectivePadding() depends on m_indicatorThickness too (the gap must
+    // always fit both borders either side of it -- see its doc comment), so
+    // a thickness change alone still needs every managed root's padding
+    // re-applied, not just the tab/stack headers.
+    applyPaddingToManagedRoots();
+    refreshAllGroups();
+}
+
+void TileTreeController::applyPaddingToManagedRoots()
+{
+    for (RootTile *root : std::as_const(m_managedRoots)) {
+        root->setPadding(effectivePadding());
+    }
+}
+
+void TileTreeController::reloadConfig()
+{
+    m_nonTileableRules = loadNonTileableRules();
+    m_gap = loadGap();
+    applyPaddingToManagedRoots();
 }
 
 void TileTreeController::attachWindow(Window *window, CustomTile *leaf)

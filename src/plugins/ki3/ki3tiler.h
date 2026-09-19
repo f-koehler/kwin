@@ -148,6 +148,16 @@ public Q_SLOTS:
     Q_SCRIPTABLE QString dbusRemoveTestOutput();
 
     /**
+     * Re-read `ki3rc` and apply every setting live: non-tileable rules, tile
+     * gap, border thickness, and the per-desktop output-priority list.
+     * Called by the ki3 System Settings KCM's save() over D-Bus (see
+     * ki3-pager/ki3pagerbackend.cpp for the same
+     * "org.kde.KWin"/"/Ki3"/"org.kde.ki3" QDBusInterface pattern) so changes
+     * take effect without restarting the compositor.
+     */
+    Q_SCRIPTABLE void reloadConfig();
+
+    /**
      * Test-only: directly set the active window's decoration policy/keep-above/
      * all-desktops state, bypassing ki3 entirely -- simulating state a
      * WindowRule or the user set *before* ki3 ever touched the window, so a

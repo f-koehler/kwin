@@ -158,6 +158,24 @@ public:
     /** Push a freshly (re)computed header palette to every tab/stack header. */
     void setHeaderPalette(const Ki3HeaderPalette &palette);
 
+    /**
+     * Push a freshly (re)read indicator thickness (ki3rc [General]
+     * BorderThickness, see DecorationController) to every tab/stack header, so
+     * a tab/stack header stays flush with the tile border it lines up with
+     * (see refreshGroup()) even after the setting changes live.
+     */
+    void setIndicatorThickness(qreal thickness);
+
+    /**
+     * Re-read `ki3rc`'s non-tileable rules and tile gap (`[General]`
+     * `NonTileableClasses`/`NonTileableTitles`/`Gap`) and apply them: swaps
+     * m_nonTileableRules, and re-applies the gap to every already-managed
+     * root's padding (Tile::setPadding() no-ops when unchanged and already
+     * live-resizes any managed windows -- see tile.cpp). Called from
+     * Ki3Tiler::reloadConfig() after the KCM saves.
+     */
+    void reloadConfig();
+
     /** Move keyboard focus to the neighbouring leaf in @p edge direction. */
     void moveFocus(Qt::Edge edge);
 
@@ -294,6 +312,26 @@ private:
      */
     void ensureManaged(RootTile *root);
 
+    /**
+     * The actual value passed to Tile::setPadding(): the configured gap
+     * (`ki3rc [General] Gap`, m_gap) *plus* two border thicknesses. The
+     * border is drawn outward from a tile's windowGeometry() into its own
+     * padding/gap allowance (see outwardBorderStrips() in
+     * ki3decorationcontroller.cpp), and on a shared edge between two tiles
+     * each side only gets half the padding -- so without this, a configured
+     * gap smaller than 2x the border thickness would let the two tiles'
+     * borders overlap or clip. m_gap (the KCM's "Gap" setting) is therefore
+     * the *extra* breathing room beyond the minimum the borders themselves
+     * need, not the total.
+     */
+    qreal effectivePadding() const
+    {
+        return m_gap + 2 * m_indicatorThickness;
+    }
+
+    /** Re-apply effectivePadding() to every currently-managed root. */
+    void applyPaddingToManagedRoots();
+
     /** First leaf (childless) tile under @p root, or @p root if it has none. */
     static CustomTile *firstLeaf(RootTile *root);
 
@@ -399,10 +437,21 @@ private:
     // Rules (built-in + user config) for windows ki3 must never tile.
     QList<WindowRule> m_nonTileableRules;
 
+    // Tile gap in logical px, from ki3rc [General] Gap (default: Tile's own
+    // hardcoded default -- see tile.h). Applied to every root the moment ki3
+    // takes it over (ensureManaged()) and re-applied to every already-managed
+    // root on reloadConfig().
+    qreal m_gap = 4.0;
+
     // Pushed in by Ki3Tiler::applyIndicatorColors() whenever it recomputes
     // the colour scheme -- see the class doc comment above. Used when
     // creating/repainting a tab/stack group header.
     Ki3HeaderPalette m_headerPalette;
+
+    // Pushed in by DecorationController::applyIndicatorColors()/reloadConfig()
+    // (ki3rc [General] BorderThickness) -- see setIndicatorThickness(). Used
+    // by refreshGroup() to line a tab/stack header up with the tile border.
+    qreal m_indicatorThickness = kIndicatorThickness;
 };
 
 } // namespace KWin

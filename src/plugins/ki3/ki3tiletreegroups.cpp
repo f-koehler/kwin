@@ -274,13 +274,15 @@ void TileTreeController::refreshGroup(CustomTile *tile)
     }
 
     // The header sits directly above the reserved window area, extended by
-    // kIndicatorThickness on each side to line up with the tile border's
-    // left/right strips (see outwardBorderStrips() in ki3tiler.cpp) instead of
-    // falling short of them -- same fix as the floating title bar's
-    // repositionFloatChrome() got earlier.
+    // m_indicatorThickness on each side to line up with the tile border's
+    // left/right strips (see outwardBorderStrips() in ki3decorationcontroller.cpp)
+    // instead of falling short of them -- same fix as the floating title bar's
+    // repositionFloatChrome() got earlier. Pushed in by
+    // DecorationController::applyIndicatorColors()/reloadConfig() via
+    // setIndicatorThickness() (ki3rc [General] BorderThickness).
     const RectF content = tile->windowGeometry();
-    const QRectF headerRect(content.left() - kIndicatorThickness, content.top() - headerPx,
-                            content.width() + 2 * kIndicatorThickness, headerPx);
+    const QRectF headerRect(content.left() - m_indicatorThickness, content.top() - headerPx,
+                            content.width() + 2 * m_indicatorThickness, headerPx);
 
     QStringList titles;
     titles.reserve(st.windows.size());

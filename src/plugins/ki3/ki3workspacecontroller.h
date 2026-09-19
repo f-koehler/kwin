@@ -166,6 +166,19 @@ public:
      */
     void schedulePrune();
 
+    /**
+     * Load the user's desktop -> output priority list from `ki3rc`'s
+     * `[Workspaces]` group (i3/sway `workspace <n> output <o1> <o2> ...` model:
+     * key = desktop number, value = comma-separated output names, first
+     * connected one wins) into m_workspaceOutputPreference. Called once at
+     * construction, and again from Ki3Tiler::reloadConfig() after the KCM's
+     * per-desktop output-priority editor saves. Does not itself reconcile the
+     * new preference against currently-connected outputs -- that only happens
+     * on the next hotplug/desktop-switch event that calls
+     * claimConfiguredOutputs(), same as before this was made reloadable.
+     */
+    void loadWorkspaceOutputPreferences();
+
 Q_SIGNALS:
     /**
      * Emitted whenever any output's current desktop changes as a side effect
@@ -198,15 +211,6 @@ private:
      * destruction before we check occupancy.
      */
     void pruneEmptyDesktops();
-
-    /**
-     * Load the user's desktop -> output priority list from `ki3rc`'s
-     * `[Workspaces]` group (i3/sway `workspace <n> output <o1> <o2> ...` model:
-     * key = desktop number, value = comma-separated output names, first
-     * connected one wins) into m_workspaceOutputPreference. Called once at
-     * construction.
-     */
-    void loadWorkspaceOutputPreferences();
 
     /**
      * Apply m_workspaceOutputPreference against the outputs currently connected:

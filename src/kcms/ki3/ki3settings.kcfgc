@@ -1,0 +1,6 @@
+File=ki3settings.kcfg
+ClassName=Ki3Settings
+Mutators=true
+DefaultValueGetters=true
+GenerateProperties=true
+ParentInConstructor=true

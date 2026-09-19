@@ -29,15 +29,15 @@ static QColor mixColors(const QColor &a, const QColor &b, qreal t)
                             a.blueF() + (b.blueF() - a.blueF()) * t);
 }
 
-// The four kIndicatorThickness-wide edge strips outlining @p geom, in the order
-// the resize/focus border arrays expect: top, bottom, left, right.
-static std::array<RectF, 4> borderStrips(const RectF &geom)
+// The four @p thickness-wide edge strips outlining @p geom, in the order the
+// resize/focus border arrays expect: top, bottom, left, right.
+static std::array<RectF, 4> borderStrips(const RectF &geom, qreal thickness)
 {
     return {
-        RectF(geom.left(), geom.top(), geom.width(), kIndicatorThickness),
-        RectF(geom.left(), geom.bottom() - kIndicatorThickness, geom.width(), kIndicatorThickness),
-        RectF(geom.left(), geom.top(), kIndicatorThickness, geom.height()),
-        RectF(geom.right() - kIndicatorThickness, geom.top(), kIndicatorThickness, geom.height()),
+        RectF(geom.left(), geom.top(), geom.width(), thickness),
+        RectF(geom.left(), geom.bottom() - thickness, geom.width(), thickness),
+        RectF(geom.left(), geom.top(), thickness, geom.height()),
+        RectF(geom.right() - thickness, geom.top(), thickness, geom.height()),
     };
 }
 
@@ -47,26 +47,37 @@ static std::array<RectF, 4> borderStrips(const RectF &geom)
 // content. Top/bottom extend the full outward width (including both side
 // thicknesses) so all four strips still meet cleanly at the corners, same as
 // borderStrips()'s inward overlap does.
-static std::array<RectF, 4> outwardBorderStrips(const RectF &geom)
+static std::array<RectF, 4> outwardBorderStrips(const RectF &geom, qreal thickness)
 {
     return {
-        RectF(geom.left() - kIndicatorThickness, geom.top() - kIndicatorThickness,
-              geom.width() + 2 * kIndicatorThickness, kIndicatorThickness),
-        RectF(geom.left() - kIndicatorThickness, geom.bottom(),
-              geom.width() + 2 * kIndicatorThickness, kIndicatorThickness),
-        RectF(geom.left() - kIndicatorThickness, geom.top(), kIndicatorThickness, geom.height()),
-        RectF(geom.right(), geom.top(), kIndicatorThickness, geom.height()),
+        RectF(geom.left() - thickness, geom.top() - thickness,
+              geom.width() + 2 * thickness, thickness),
+        RectF(geom.left() - thickness, geom.bottom(),
+              geom.width() + 2 * thickness, thickness),
+        RectF(geom.left() - thickness, geom.top(), thickness, geom.height()),
+        RectF(geom.right(), geom.top(), thickness, geom.height()),
     };
+}
+
+// ki3rc [General] BorderThickness, or kIndicatorThickness (ki3header.h) if unset/invalid.
+static qreal loadBorderThickness()
+{
+    const KConfigGroup group =
+        KSharedConfig::openConfig(QStringLiteral("ki3rc"))->group(QStringLiteral("General"));
+    return group.readEntry("BorderThickness", kIndicatorThickness);
 }
 
 DecorationController::DecorationController(TileTreeController *tileTree, QObject *parent)
     : QObject(parent)
     , m_tileTree(tileTree)
+    , m_indicatorThickness(loadBorderThickness())
     , m_splitIndicatorWindow(std::make_unique<Ki3SolidOverlay>())
 {
     for (auto &strip : m_resizeBorder) {
         strip = std::make_unique<Ki3SolidOverlay>();
     }
+
+    m_tileTree->setIndicatorThickness(m_indicatorThickness);
 
     // Replaces what used to be a direct updateSplitIndicator()/
     // updateTileBorders() call from inside every tile-tree-mutating method --
@@ -85,6 +96,14 @@ DecorationController::DecorationController(TileTreeController *tileTree, QObject
         }
     });
     applyIndicatorColors();
+}
+
+void DecorationController::reloadConfig()
+{
+    m_indicatorThickness = loadBorderThickness();
+    m_tileTree->setIndicatorThickness(m_indicatorThickness);
+    updateAllFloatChromeBorders();
+    updateSplitIndicator(); // also refreshes tile borders + the resize-mode border
 }
 
 void DecorationController::watchWindow(Window *window)
@@ -215,8 +234,8 @@ void DecorationController::updateSplitIndicator()
 
     const RectF geom = leaf->windowGeometry();
     const RectF strip = (m_tileTree->splitDirection() == Tile::LayoutDirection::Horizontal)
-        ? RectF(geom.right() - kIndicatorThickness, geom.top(), kIndicatorThickness, geom.height())
-        : RectF(geom.left(), geom.bottom() - kIndicatorThickness, geom.width(), kIndicatorThickness);
+        ? RectF(geom.right() - m_indicatorThickness, geom.top(), m_indicatorThickness, geom.height())
+        : RectF(geom.left(), geom.bottom() - m_indicatorThickness, geom.width(), m_indicatorThickness);
     m_splitIndicatorWindow->setGeometry(strip.toRect());
     m_splitIndicatorWindow->show();
 }
@@ -256,7 +275,7 @@ void DecorationController::updateResizeIndicator()
         return;
     }
 
-    const auto strips = borderStrips(leaf->windowGeometry());
+    const auto strips = borderStrips(leaf->windowGeometry(), m_indicatorThickness);
     for (int i = 0; i < 4; ++i) {
         m_resizeBorder[i]->setGeometry(strips[i].toRect());
         m_resizeBorder[i]->show();
@@ -344,7 +363,7 @@ void DecorationController::repositionTileBorder(CustomTile *leaf)
     }
     TileBorder &border = it.value();
 
-    const auto strips = outwardBorderStrips(leaf->windowGeometry());
+    const auto strips = outwardBorderStrips(leaf->windowGeometry(), m_indicatorThickness);
     // A tab/stack group already has its own header showing the title right
     // above windowGeometry() (see TileTreeController::refreshGroup()); the top
     // strip there would just be redundant wasted space, so skip it for

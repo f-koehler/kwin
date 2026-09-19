@@ -10,6 +10,7 @@ add_subdirectory(screenedges)
 add_subdirectory(scripts)
 add_subdirectory(desktop)
 add_subdirectory(effects)
+add_subdirectory(ki3)
 add_subdirectory(virtualkeyboard)
 add_subdirectory(xwayland)
 
