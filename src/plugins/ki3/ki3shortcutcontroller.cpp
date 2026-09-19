@@ -11,7 +11,6 @@
 #include "ki3_logging.h"
 #include "ki3tiler.h"
 
-#include "main.h"
 #include "window.h"
 #include "workspace.h"
 
@@ -24,7 +23,6 @@
 
 #include <QAction>
 #include <QDBusConnection>
-#include <QProcess>
 
 #include <functional>
 
@@ -153,12 +151,6 @@ void ShortcutController::registerShortcuts()
         {QKeySequence(Qt::META | Qt::CTRL | Qt::Key_K), QKeySequence(Qt::META | Qt::CTRL | Qt::Key_Up)},
         [this]() {
         m_tileTree->resizeActive(Qt::Vertical, -50);
-    });
-
-    // Launch a terminal (Meta + Return), i3-style.
-    add(QStringLiteral("ki3_spawn_terminal"), i18n("ki3: Launch Terminal"),
-        {QKeySequence(Qt::META | Qt::Key_Return)}, [this]() {
-        spawnTerminal();
     });
 
     // Split direction for the *next* window (i3/sway "split h"/"split v").
@@ -352,18 +344,6 @@ void ShortcutController::closeActiveWindow()
     }
     qCDebug(KWIN_KI3) << "close" << window->caption();
     window->closeWindow();
-}
-
-void ShortcutController::spawnTerminal()
-{
-    // TODO(config): make the terminal configurable (M5).
-    auto *process = new QProcess(this);
-    process->setProcessChannelMode(QProcess::ForwardedChannels);
-    process->setProcessEnvironment(kwinApp()->processStartupEnvironment());
-    process->setProgram(QStringLiteral("konsole"));
-    process->startDetached();
-    process->deleteLater();
-    qCDebug(KWIN_KI3) << "spawn terminal";
 }
 
 } // namespace KWin

@@ -21,8 +21,8 @@ class Ki3Tiler;
 
 /**
  * Registers ki3's global shortcuts and dispatches them into whichever
- * controller owns the acted-on state, plus the two behaviors with no state
- * of their own (spawning a terminal, closing the active window). Fifth and
+ * controller owns the acted-on state, plus the one behavior with no state
+ * of its own (closing the active window). Fifth and
  * last controller extracted from the `Ki3Tiler` god object (M1 refactor,
  * Phase 5) -- see `~/.claude/plans/toasty-fluttering-kitten.md` and the
  * matching ki3-PLAN.md entry. After this phase `Ki3Tiler` is the thin
@@ -122,9 +122,6 @@ private:
 
     /** Move keyboard focus in @p edge direction (bound to Meta+h/j/k/l/arrows). */
     void handleDirectional(Qt::Edge edge);
-
-    /** Launch a terminal emulator (i3-style Meta+Return). */
-    void spawnTerminal();
 
     /** Close the active window (i3/sway-style Meta+Shift+Q). */
     void closeActiveWindow();
