@@ -31,6 +31,7 @@ class KWIN_EXPORT Tile : public QObject
     Q_PROPERTY(KWin::RectF absoluteGeometry READ absoluteGeometry NOTIFY absoluteGeometryChanged)
     Q_PROPERTY(KWin::RectF absoluteGeometryInScreen READ absoluteGeometryInScreen NOTIFY absoluteGeometryChanged)
     Q_PROPERTY(qreal padding READ padding WRITE setPadding NOTIFY paddingChanged)
+    Q_PROPERTY(qreal outerPadding READ outerPadding WRITE setOuterPadding NOTIFY outerPaddingChanged)
     Q_PROPERTY(QSizeF minimumSize READ minimumSize WRITE setMinimumSize NOTIFY minimumSizeChanged)
     Q_PROPERTY(int positionInLayout READ row NOTIFY rowChanged)
     Q_PROPERTY(Tile *parent READ parentTile CONSTANT)
@@ -96,6 +97,20 @@ public:
 
     qreal padding() const;
     void setPadding(qreal padding);
+
+    /**
+     * Padding applied against the *screen edge* only (as opposed to
+     * padding(), applied at every tile boundary including shared ones
+     * between siblings). Defaults to tracking padding() exactly -- so a
+     * caller that never calls this keeps today's behaviour, where the two
+     * are the same value -- until setOuterPadding() is called explicitly,
+     * after which it's independent. Added for ki3's separately-configurable
+     * "gap around the screen edge" vs "gap between tiles" settings; see the
+     * ki3-PLAN.md entry for why a single padding() value can't represent
+     * both once a caller-drawn border is involved.
+     */
+    qreal outerPadding() const;
+    void setOuterPadding(qreal padding);
 
     /**
      * Pixels reserved at the top of windowGeometry() for a caller-drawn header
@@ -164,6 +179,7 @@ Q_SIGNALS:
     void absoluteGeometryChanged();
     void windowGeometryChanged();
     void paddingChanged(qreal padding);
+    void outerPaddingChanged(qreal padding);
     void minimumSizeChanged(const QSizeF &size);
     void rowChanged(int row);
     void isLayoutChanged(bool isLayout);
@@ -189,6 +205,8 @@ protected:
     QSizeF m_minimumSize = QSizeF(0.15, 0.15);
     QuickTileMode m_quickTileMode = QuickTileFlag::None;
     qreal m_padding = 4.0;
+    qreal m_outerPadding = 4.0;
+    bool m_outerPaddingSet = false;
     qreal m_headerReserve = 0.0;
 };
 

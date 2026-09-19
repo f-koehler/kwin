@@ -115,6 +115,29 @@ KCM.SimpleKCM {
             }
 
             QQC2.SpinBox {
+                id: outerGapSpinBox
+                Kirigami.FormData.label: i18n("Extra gap around the screen edge:")
+                from: 0
+                to: 64
+                value: kcm.ki3Settings.outerGap
+                onValueModified: kcm.ki3Settings.outerGap = value
+                textFromValue: (value, locale) => i18n("%1 px", value)
+                valueFromText: (text, locale) => parseInt(text)
+
+                KCM.SettingStateBinding {
+                    configObject: kcm.ki3Settings
+                    settingName: "outerGap"
+                }
+            }
+
+            QQC2.Label {
+                Kirigami.FormData.label: ""
+                text: i18nc("@info", "On top of the space the border itself needs (1 x border thickness)")
+                opacity: 0.7
+                font: Kirigami.Theme.smallFont
+            }
+
+            QQC2.SpinBox {
                 id: borderThicknessSpinBox
                 Kirigami.FormData.label: i18n("Border thickness:")
                 from: 1

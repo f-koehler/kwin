@@ -167,12 +167,13 @@ public:
     void setIndicatorThickness(qreal thickness);
 
     /**
-     * Re-read `ki3rc`'s non-tileable rules and tile gap (`[General]`
-     * `NonTileableClasses`/`NonTileableTitles`/`Gap`) and apply them: swaps
-     * m_nonTileableRules, and re-applies the gap to every already-managed
-     * root's padding (Tile::setPadding() no-ops when unchanged and already
-     * live-resizes any managed windows -- see tile.cpp). Called from
-     * Ki3Tiler::reloadConfig() after the KCM saves.
+     * Re-read `ki3rc`'s non-tileable rules and tile/outer gaps (`[General]`
+     * `NonTileableClasses`/`NonTileableTitles`/`Gap`/`OuterGap`) and apply
+     * them: swaps m_nonTileableRules, and re-applies both gaps to every
+     * already-managed root's padding/outerPadding (Tile::setPadding()/
+     * setOuterPadding() no-op when unchanged and already live-resize any
+     * managed windows -- see tile.cpp). Called from Ki3Tiler::reloadConfig()
+     * after the KCM saves.
      */
     void reloadConfig();
 
@@ -313,23 +314,44 @@ private:
     void ensureManaged(RootTile *root);
 
     /**
-     * The actual value passed to Tile::setPadding(): the configured gap
-     * (`ki3rc [General] Gap`, m_gap) *plus* two border thicknesses. The
-     * border is drawn outward from a tile's windowGeometry() into its own
-     * padding/gap allowance (see outwardBorderStrips() in
-     * ki3decorationcontroller.cpp), and on a shared edge between two tiles
-     * each side only gets half the padding -- so without this, a configured
-     * gap smaller than 2x the border thickness would let the two tiles'
-     * borders overlap or clip. m_gap (the KCM's "Gap" setting) is therefore
-     * the *extra* breathing room beyond the minimum the borders themselves
-     * need, not the total.
+     * The actual value passed to Tile::setPadding() (the gap *between*
+     * tiles): the configured gap (`ki3rc [General] Gap`, m_gap) *plus* two
+     * border thicknesses. The border is drawn outward from a tile's
+     * windowGeometry() into its own padding/gap allowance (see
+     * outwardBorderStrips() in ki3decorationcontroller.cpp), and on a shared
+     * edge between two tiles each side only gets half the padding -- so
+     * without this, a configured gap smaller than 2x the border thickness
+     * would let the two tiles' borders overlap or clip (one border from
+     * each side of the shared edge). m_gap (the KCM's "Gap" setting) is
+     * therefore the *extra* breathing room beyond the minimum the borders
+     * themselves need, not the total.
      */
     qreal effectivePadding() const
     {
         return m_gap + 2 * m_indicatorThickness;
     }
 
-    /** Re-apply effectivePadding() to every currently-managed root. */
+    /**
+     * The actual value passed to Tile::setOuterPadding() (the gap *around
+     * the screen edge*): the configured outer gap (`ki3rc [General]
+     * OuterGap`, m_outerGap) plus a *single* border thickness -- unlike
+     * effectivePadding(), only one border ever faces the screen edge (the
+     * other "side" is the physical screen boundary, which draws nothing),
+     * so it only needs to fit past that one. Kept as a genuinely separate
+     * Tile::outerPadding() (a core patch -- see tile.h/.cpp) rather than
+     * reusing padding()'s halving trick, since half of a *combined*
+     * inner+outer value can't represent two independently configurable gaps
+     * at once; see the ki3-PLAN.md entry for the full derivation of why the
+     * single shared `padding()` value made the rendered gap inconsistent
+     * between a single window, a tiled split, and a tabbed group before
+     * this was split out.
+     */
+    qreal effectiveOuterPadding() const
+    {
+        return m_outerGap + m_indicatorThickness;
+    }
+
+    /** Re-apply effectivePadding()/effectiveOuterPadding() to every currently-managed root. */
     void applyPaddingToManagedRoots();
 
     /** First leaf (childless) tile under @p root, or @p root if it has none. */
@@ -442,6 +464,11 @@ private:
     // takes it over (ensureManaged()) and re-applied to every already-managed
     // root on reloadConfig().
     qreal m_gap = 4.0;
+
+    // Gap around the screen edge, from ki3rc [General] OuterGap. Separate
+    // from m_gap -- see effectiveOuterPadding()'s doc comment -- but read/
+    // applied at the same points in the lifecycle.
+    qreal m_outerGap = 4.0;
 
     // Pushed in by Ki3Tiler::applyIndicatorColors() whenever it recomputes
     // the colour scheme -- see the class doc comment above. Used when

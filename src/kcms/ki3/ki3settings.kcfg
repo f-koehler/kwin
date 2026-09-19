@@ -14,7 +14,13 @@
       <default/>
     </entry>
     <entry name="gap" key="Gap" type="Int">
-      <label>Extra gap between tiles and around the screen edge, in pixels, on top of the space the border itself needs (2x border thickness)</label>
+      <label>Extra gap between tiles, in pixels, on top of the space the border itself needs (2x border thickness)</label>
+      <default>4</default>
+      <min>0</min>
+      <max>64</max>
+    </entry>
+    <entry name="outerGap" key="OuterGap" type="Int">
+      <label>Extra gap around the screen edge, in pixels, on top of the space the border itself needs (1x border thickness)</label>
       <default>4</default>
       <min>0</min>
       <max>64</max>

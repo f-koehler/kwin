@@ -27,6 +27,8 @@ Tile::Tile(TileManager *tiling, Tile *parent)
 {
     if (m_parentTile) {
         m_padding = m_parentTile->padding();
+        m_outerPadding = m_parentTile->m_outerPadding;
+        m_outerPaddingSet = m_parentTile->m_outerPaddingSet;
         m_minimumSize = m_parentTile->m_minimumSize;
         m_desktop = m_parentTile->desktop();
     }
@@ -199,12 +201,14 @@ RectF Tile::absoluteGeometryInScreen() const
 
 RectF Tile::windowGeometry() const
 {
-    // Apply half padding between tiles and full against the screen edges
+    // Apply half padding between tiles, and outerPadding() (defaults to
+    // tracking padding() -- see its doc comment) against the screen edges.
+    const qreal outerPad = outerPadding();
     QMarginsF effectiveMargins;
-    effectiveMargins.setLeft(m_relativeGeometry.left() > 0.0 ? m_padding / 2.0 : m_padding);
-    effectiveMargins.setTop(m_relativeGeometry.top() > 0.0 ? m_padding / 2.0 : m_padding);
-    effectiveMargins.setRight(m_relativeGeometry.right() < 1.0 ? m_padding / 2.0 : m_padding);
-    effectiveMargins.setBottom(m_relativeGeometry.bottom() < 1.0 ? m_padding / 2.0 : m_padding);
+    effectiveMargins.setLeft(m_relativeGeometry.left() > 0.0 ? m_padding / 2.0 : outerPad);
+    effectiveMargins.setTop(m_relativeGeometry.top() > 0.0 ? m_padding / 2.0 : outerPad);
+    effectiveMargins.setRight(m_relativeGeometry.right() < 1.0 ? m_padding / 2.0 : outerPad);
+    effectiveMargins.setBottom(m_relativeGeometry.bottom() < 1.0 ? m_padding / 2.0 : outerPad);
 
     const auto geom = absoluteGeometry();
     RectF windowGeom = geom.intersected(m_tiling->output()->geometryF()) - effectiveMargins;
@@ -306,6 +310,36 @@ void Tile::setPadding(qreal padding)
     }
 
     Q_EMIT paddingChanged(padding);
+    Q_EMIT windowGeometryChanged();
+}
+
+qreal Tile::outerPadding() const
+{
+    // Tracks padding() until explicitly overridden -- see the header doc
+    // comment for why (backwards compatibility for any caller, e.g. KWin's
+    // own quick-tiling KCM, that only ever calls setPadding()).
+    return m_outerPaddingSet ? m_outerPadding : m_padding;
+}
+
+void Tile::setOuterPadding(qreal padding)
+{
+    if (m_outerPaddingSet && m_outerPadding == padding) {
+        return;
+    }
+
+    m_outerPaddingSet = true;
+    m_outerPadding = padding;
+
+    for (auto *t : std::as_const(m_children)) {
+        t->setOuterPadding(padding);
+    }
+    if (isActive()) {
+        for (auto *w : std::as_const(m_windows)) {
+            w->moveResize(windowGeometry());
+        }
+    }
+
+    Q_EMIT outerPaddingChanged(padding);
     Q_EMIT windowGeometryChanged();
 }
 
