@@ -55,6 +55,17 @@ QList<WindowRule> builtinNonTileableRules()
         // no skip-taskbar/no-focus hints (the usual cure is a KWin rule by
         // class), so the reliable signal is the window class.
         WindowRule::matchClass(QStringLiteral("xwaylandvideobridge")),
+        // ../../../ki3-toggle-tiling/ is a quick-launch popup (pick a window,
+        // toggle a rule for it) -- a perfectly ordinary top-level window as
+        // far as KWin is concerned, so without this ki3 would tile *it* into
+        // whatever layout is currently focused instead of leaving it as an
+        // obviously-visible floating dialog. App ID set explicitly via
+        // QGuiApplication::setDesktopFileName() in that project's main.cpp,
+        // matching its .desktop file's basename -- see the 2026-09-19
+        // ki3-PLAN.md entry (this shipped broken: the popup silently got
+        // tiled into a sliver next to whatever launched it, looking like the
+        // whole app did nothing).
+        WindowRule::matchClass(QStringLiteral("org.kde.ki3.toggle-tiling")),
     };
 }
 
