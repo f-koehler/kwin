@@ -204,6 +204,17 @@ void ShortcutController::registerShortcuts()
     add(QStringLiteral("ki3_noop_minimize"), i18n("ki3: Disabled Window Minimize"),
         {QKeySequence(Qt::META | Qt::Key_PageDown)}, []() { });
 
+    // Steal KWin's own native Tiles Editor effect's Meta+T ("Edit Tiles",
+    // src/plugins/tileseditor/tileseditoreffect.cpp) and no-op it: that
+    // effect's on-screen tile-editing overlay is a second, competing manual
+    // tiling system, and popping it up over ki3's own tiled layout is
+    // confusing at best and layout-corrupting at worst -- same class of
+    // problem as the Overview effect's Meta+W and the maximize/minimize
+    // no-ops above. Restored to KWin's own binding on a clean exit back to
+    // plain Plasma, like every other stolen key here (Ki3SessionGuard).
+    add(QStringLiteral("ki3_noop_tiles_editor"), i18n("ki3: Disabled Tiles Editor"),
+        {QKeySequence(Qt::META | Qt::Key_T)}, []() { });
+
     // Workspaces: Meta+1..9,0 switch, Meta+Shift+1..9,0 move window. As in
     // i3/sway, Meta+0 is workspace 10.
     static constexpr Qt::Key digits[10] = {
