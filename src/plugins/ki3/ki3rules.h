@@ -17,7 +17,9 @@ class Window;
 
 /**
  * A single rule that matches a window by one of its attributes. Used to classify
- * windows ki3 should treat specially — currently to mark them non-tileable.
+ * windows ki3 should treat specially — currently either to always float them
+ * (user-configurable, see loadFloatingRules()) or to never touch them at all
+ * (built-in only, see builtinIgnoredRules()).
  *
  * A rule matches one field against a case-insensitive glob pattern
  * (e.g. "xwaylandvideobridge", "*Picture-in-Picture*"). Extending the matcher to
@@ -47,14 +49,26 @@ private:
     QRegularExpression m_pattern;
 };
 
-/** Built-in non-tileable rules shipped with ki3 (e.g. xwaylandvideobridge). */
-QList<WindowRule> builtinNonTileableRules();
+/**
+ * Built-in rules for windows ki3 must never touch at all -- not tiled, not
+ * floating, no chrome, exactly as if ki3 didn't exist. Deliberately separate
+ * from the user-facing floating rules (loadFloatingRules()): these are
+ * technical workarounds for windows that would look wrong with ki3's own
+ * floating title bar (e.g. xwaylandvideobridge's normally-invisible helper
+ * window), not real "this window should float" preferences, so they're not
+ * exposed in ki3rc/the KCM and never merged into the floating-rules list.
+ */
+QList<WindowRule> builtinIgnoredRules();
 
 /**
- * Built-in rules plus user-declared ones from `ki3rc` ([General] keys
- * NonTileableClasses / NonTileableTitles, comma-separated globs). Respects
- * XDG_CONFIG_HOME, so in a ki3 session it reads ~/.config-ki3/ki3rc.
+ * User-declared floating rules from `ki3rc` ([General] keys
+ * FloatingClasses / FloatingTitles, comma-separated globs) -- windows i3/sway
+ * style: never tiled, always a real floating window with ki3's own chrome,
+ * exactly as if the user had toggled floating on it by hand. Does *not*
+ * include the built-in ignore rules -- see builtinIgnoredRules() -- those are
+ * a fully separate mechanism. Respects XDG_CONFIG_HOME, so in a ki3 session
+ * it reads ~/.config-ki3/ki3rc.
  */
-QList<WindowRule> loadNonTileableRules();
+QList<WindowRule> loadFloatingRules();
 
 } // namespace KWin

@@ -57,10 +57,11 @@ public:
     ~Ki3Tiler() override;
 
     /**
-     * Toggle the active window between tiled and floating. A genuine
-     * two-controller sequence (TileTreeController::isFloating/forgetWindow/
-     * insertWindow + DecorationController::createFloatChrome/
-     * destroyFloatChrome) with no single-controller home, so it stays here
+     * Toggle the active window between tiled and floating, and record it as
+     * a manual override (see TileTreeController::markManualOverride()) so a
+     * later rule/sticky reload never overrides the user's explicit choice. A
+     * genuine two-controller sequence (detachAndFloat()/unfloatWindow(), see
+     * their doc comments) with no single-controller home, so it stays here
      * rather than moving into ShortcutController with the rest of the
      * shortcut dispatch. Public so ShortcutController's float-toggle
      * shortcut can call it directly -- see its class doc comment for why
@@ -148,7 +149,7 @@ public Q_SLOTS:
     Q_SCRIPTABLE QString dbusRemoveTestOutput();
 
     /**
-     * Re-read `ki3rc` and apply every setting live: non-tileable rules, tile
+     * Re-read `ki3rc` and apply every setting live: floating rules, tile
      * gap, border thickness, and the per-desktop output-priority list.
      * Called by the ki3 System Settings KCM's save() over D-Bus (see
      * ki3-pager/ki3pagerbackend.cpp for the same
@@ -188,6 +189,46 @@ private:
     void handleWindowAdded(Window *window);
     void handleWindowRemoved(Window *window);
     void handleWindowActivated(Window *window);
+
+    /**
+     * Make @p window float, assuming it is not currently tiled (either
+     * brand-new, or already detached by the caller). Adds it to
+     * TileTreeController's floating set (capturing its pre-ki3 decoration
+     * baseline) and gives it ki3's own chrome -- the shared tail of every
+     * "this window should float" path: a manual toggleFloating(), a window
+     * that matches a floating rule or is sticky/multi-desktop the moment it
+     * opens (handleWindowAdded()), and reconcileFloatingState()'s equivalent
+     * case for an already-open window.
+     */
+    void floatWindow(Window *window);
+
+    /**
+     * Detach @p window from its tile and float it (floatWindow() plus the
+     * tile-side teardown). Shared by toggleFloating()'s float branch and
+     * reconcileFloatingState()'s tiled-to-floating transition.
+     */
+    void detachAndFloat(Window *window);
+
+    /**
+     * Re-tile a currently-floating @p window: tear down its chrome, restore
+     * its pre-ki3 keep-above state, and insert it into the tile tree. Shared
+     * by toggleFloating()'s unfloat branch and reconcileFloatingState()'s
+     * floating-to-tiled transition.
+     */
+    void unfloatWindow(Window *window);
+
+    /**
+     * Re-check every already-open window against the just-reloaded floating
+     * rules (and, freshly, its current sticky/multi-desktop status) and
+     * float/tile it if that flipped -- so an edited rule takes effect on an
+     * already-open window immediately, not just on windows opened
+     * afterwards. Skips anything isIgnored() (never touched at all) or
+     * isManualOverride() (the user's own explicit toggleFloating() choice,
+     * which always wins over rules for the rest of that window's lifetime).
+     * Called from reloadConfig(), right after TileTreeController::reloadConfig()
+     * has re-read the rules themselves.
+     */
+    void reconcileFloatingState();
 
     /**
      * Undo everything ki3 wrote into KWin's *windows* and *tile trees* (as

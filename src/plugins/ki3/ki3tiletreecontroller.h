@@ -81,13 +81,20 @@ public:
     /** Snapshot of every currently tiled window with a live leaf. */
     QList<Window *> managedWindows() const;
 
-    /** Whether @p window has been detached from tiling (floated). */
+    /** Whether @p window is currently floating (never tiled, i3/sway style -- see wantsFloating()). */
     bool isFloating(Window *window) const;
 
-    /** Every window the user has detached from tiling. */
+    /** Every window currently floating, however it got there. */
     const QSet<Window *> &floatingWindows() const;
 
-    /** Add/remove @p window from the floating set (see toggleFloating()). */
+    /**
+     * Add/remove @p window from the floating set (see Ki3Tiler::floatWindow()/
+     * toggleFloating()). addFloating() also captures the window's pre-ki3
+     * decoration/keep-above baseline (notePresentationBaseline(), a no-op if
+     * already recorded), covering both "was already tiled, now floats" and
+     * "never tiled, floats from the moment it opened" (a floating-rule or
+     * sticky match).
+     */
     void addFloating(Window *window);
     void removeFloating(Window *window);
 
@@ -103,8 +110,39 @@ public:
     /** Whether ki3 should tile this window at all. */
     bool shouldManage(Window *window) const;
 
-    /** Whether a non-tileable rule (built-in or user-configured) matches @p window. */
-    bool isNonTileable(const Window *window) const;
+    /**
+     * Whether a built-in ignore rule matches @p window -- ki3 must never
+     * touch it at all: not tiled, not floating, no chrome, exactly as if ki3
+     * didn't exist (e.g. xwaylandvideobridge's normally-invisible helper
+     * window). Deliberately separate from wantsFloating()/matchesFloatingRule()
+     * -- see builtinIgnoredRules()'s doc comment for why.
+     */
+    bool isIgnored(const Window *window) const;
+
+    /** Whether a user-configured floating rule (ki3rc [General] FloatingClasses/FloatingTitles) matches @p window. */
+    bool matchesFloatingRule(const Window *window) const;
+
+    /**
+     * Whether ki3 should make this window float automatically, i3/sway style:
+     * it's a sticky/multi-desktop window, or it matches a floating rule.
+     * False for anything isIgnored() or not a manageable kind of window at
+     * all (special/internal/etc.) in the first place -- those must never be
+     * touched, floating included. Called at window-added time and by
+     * reconcileFloatingState() when rules are (re)loaded.
+     */
+    bool wantsFloating(const Window *window) const;
+
+    /**
+     * Record that the user explicitly toggled @p window's floating/tiled
+     * state by hand (Ki3Tiler::toggleFloating()) -- from then on, for the
+     * rest of the window's lifetime, it's immune to reloadConfig()'s
+     * rule/sticky-driven reconciliation, exactly like manually-floated
+     * windows always have been. dropManualOverride() clears it once the
+     * window is gone.
+     */
+    void markManualOverride(Window *window);
+    bool isManualOverride(Window *window) const;
+    void dropManualOverride(Window *window);
 
     /**
      * True if some ordinary window stacked above @p window overlaps its
@@ -167,18 +205,17 @@ public:
     void setIndicatorThickness(qreal thickness);
 
     /**
-     * Re-read `ki3rc`'s non-tileable rules and tile/outer gaps (`[General]`
-     * `NonTileableClasses`/`NonTileableTitles`/`Gap`/`OuterGap`) and apply
-     * them: swaps m_nonTileableRules, and re-applies both gaps to every
+     * Re-read `ki3rc`'s floating rules and tile/outer gaps (`[General]`
+     * `FloatingClasses`/`FloatingTitles`/`Gap`/`OuterGap`) and apply the
+     * gaps: swaps m_floatingRules, and re-applies both gaps to every
      * already-managed root's padding/outerPadding (Tile::setPadding()/
      * setOuterPadding() no-op when unchanged and already live-resize any
-     * managed windows -- see tile.cpp). Also re-checks every currently-open
-     * window's shouldManage() against the freshly-reloaded rules and
-     * inserts/forgets it if that flipped, so an edited rule actually
-     * tiles/untiles an already-open window immediately instead of only
-     * affecting windows opened after the change. Called from
-     * Ki3Tiler::reloadConfig() after the KCM (or the ki3-toggle-tiling app)
-     * saves.
+     * managed windows -- see tile.cpp). Does *not* itself re-check any
+     * window against the freshly-reloaded rules -- that needs
+     * DecorationController for floating chrome, which this class
+     * deliberately has no dependency on; see
+     * Ki3Tiler::reconcileFloatingState(), called right after this from
+     * Ki3Tiler::reloadConfig().
      */
     void reloadConfig();
 
@@ -450,8 +487,13 @@ private:
     // Roots whose default layout we've already cleared and taken over.
     QSet<RootTile *> m_managedRoots;
 
-    // Windows the user has detached from tiling (floating).
+    // Every currently floating window, however it got there (manual toggle,
+    // a floating rule, or sticky/multi-desktop policy).
     QSet<Window *> m_floatingWindows;
+
+    // Windows whose current floating/tiled state was an explicit user choice
+    // (Ki3Tiler::toggleFloating()) -- see markManualOverride()'s doc comment.
+    QSet<Window *> m_manualOverrides;
 
     // Leaf tiles that are tab/stack groups (own several windows, one visible).
     // Keyed by the group leaf; entries are dropped when the group empties.
@@ -461,8 +503,13 @@ private:
     // setHeaderReserve emits windowGeometryChanged (which we listen to).
     QSet<CustomTile *> m_refreshingGroups;
 
-    // Rules (built-in + user config) for windows ki3 must never tile.
-    QList<WindowRule> m_nonTileableRules;
+    // User-configured floating rules (ki3rc [General] FloatingClasses/
+    // FloatingTitles) -- reloaded live, see reloadConfig().
+    QList<WindowRule> m_floatingRules;
+
+    // Built-in ignore rules (see builtinIgnoredRules()) -- fixed at
+    // construction, never reloaded (no user config feeds these).
+    QList<WindowRule> m_ignoredRules;
 
     // Tile gap in logical px, from ki3rc [General] Gap (default: Tile's own
     // hardcoded default -- see tile.h). Applied to every root the moment ki3

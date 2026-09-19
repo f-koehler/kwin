@@ -17,7 +17,7 @@ KCM.SimpleKCM {
     implicitWidth: Kirigami.Units.gridUnit * 35
     implicitHeight: Kirigami.Units.gridUnit * 30
 
-    // A single string list (ki3Settings.nonTileableClasses/nonTileableTitles)
+    // A single string list (ki3Settings.floatingClasses/floatingTitles)
     // edited as "chips" with a text field + add button. No drag/reorder --
     // membership, not order, is all that matters for these two lists. A
     // plain Repeater rather than a ListView -- the per-item "modelData"
@@ -164,38 +164,38 @@ KCM.SimpleKCM {
             Kirigami.Heading {
                 Kirigami.FormData.isSection: true
                 level: 2
-                text: i18n("Windows that should never be tiled")
+                text: i18n("Windows that should always float")
             }
 
             RuleListEditor {
                 Kirigami.FormData.label: i18n("Window class:")
                 Layout.fillWidth: true
-                model: kcm.ki3Settings.nonTileableClasses
+                model: kcm.ki3Settings.floatingClasses
                 placeholderText: i18nc("@info:placeholder", "e.g. org.kde.kcalc")
                 onAdded: (value) => {
-                    let list = kcm.ki3Settings.nonTileableClasses;
+                    let list = kcm.ki3Settings.floatingClasses;
                     list.push(value);
-                    kcm.ki3Settings.nonTileableClasses = list;
+                    kcm.ki3Settings.floatingClasses = list;
                 }
                 onRemoved: (value) => {
-                    kcm.ki3Settings.nonTileableClasses =
-                        kcm.ki3Settings.nonTileableClasses.filter(v => v !== value);
+                    kcm.ki3Settings.floatingClasses =
+                        kcm.ki3Settings.floatingClasses.filter(v => v !== value);
                 }
             }
 
             RuleListEditor {
                 Kirigami.FormData.label: i18n("Window title:")
                 Layout.fillWidth: true
-                model: kcm.ki3Settings.nonTileableTitles
+                model: kcm.ki3Settings.floatingTitles
                 placeholderText: i18nc("@info:placeholder", "e.g. Picture-in-Picture")
                 onAdded: (value) => {
-                    let list = kcm.ki3Settings.nonTileableTitles;
+                    let list = kcm.ki3Settings.floatingTitles;
                     list.push(value);
-                    kcm.ki3Settings.nonTileableTitles = list;
+                    kcm.ki3Settings.floatingTitles = list;
                 }
                 onRemoved: (value) => {
-                    kcm.ki3Settings.nonTileableTitles =
-                        kcm.ki3Settings.nonTileableTitles.filter(v => v !== value);
+                    kcm.ki3Settings.floatingTitles =
+                        kcm.ki3Settings.floatingTitles.filter(v => v !== value);
                 }
             }
         }

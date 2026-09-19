@@ -15,7 +15,7 @@ namespace KWin
 {
 
 /**
- * System Settings module for ki3 (see ../../plugins/ki3/): non-tileable
+ * System Settings module for ki3 (see ../../plugins/ki3/): floating
  * window rules, tile gap, border thickness (all plain `ki3rc [General]`
  * KConfigXT entries -- see ki3settings.kcfg) and the per-desktop output-
  * priority list (`ki3rc [Workspaces]`, dynamic keys -- handled separately by

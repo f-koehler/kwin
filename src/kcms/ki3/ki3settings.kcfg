@@ -5,12 +5,12 @@
       http://www.kde.org/standards/kcfg/1.0/kcfg.xsd" >
   <kcfgfile name="ki3rc"/>
   <group name="General">
-    <entry name="nonTileableClasses" key="NonTileableClasses" type="StringList">
-      <label>Window classes that should never be tiled (matched against WM_CLASS, wildcards allowed)</label>
+    <entry name="floatingClasses" key="FloatingClasses" type="StringList">
+      <label>Window classes that should always float instead of tile (matched against WM_CLASS, wildcards allowed)</label>
       <default/>
     </entry>
-    <entry name="nonTileableTitles" key="NonTileableTitles" type="StringList">
-      <label>Window titles that should never be tiled (wildcards allowed)</label>
+    <entry name="floatingTitles" key="FloatingTitles" type="StringList">
+      <label>Window titles that should always float instead of tile (wildcards allowed)</label>
       <default/>
     </entry>
     <entry name="gap" key="Gap" type="Int">

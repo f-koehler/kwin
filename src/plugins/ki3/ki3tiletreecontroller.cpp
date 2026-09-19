@@ -38,9 +38,40 @@ static qreal loadOuterGap()
     return group.readEntry("OuterGap", 4);
 }
 
+// Base eligibility ki3 ever manages a window at all -- tiled or floating,
+// independent of desktop count or current floating/ignored state. Shared by
+// shouldManage() and wantsFloating() so the one safety-critical check order
+// below only needs stating once.
+//
+// isDeleted() is checked first, deliberately, and by itself before any of
+// the other (virtual) checks below: it's the one non-virtual accessor here
+// (Window::isDeleted() -- window.h/.cpp -- a plain m_deleted flag read, no
+// vtable dispatch), so it's safe to call even if window's vtable is in a bad
+// way. Confirmed exploitable in practice: a reconcileOutputs() ->
+// retileHomelessWindows() pass during output hot-unplug hit a Window still
+// present in workspace()->windows() with m_deleted == true whose *virtual*
+// isClient() call below crashed with a garbage vtable jump (landed in
+// glibc's malloc arena -- see ki3-PLAN.md for the full gdb trace). Whatever
+// left that window in this half-torn-down state, never touch anything
+// virtual on it first.
+static bool isManageableKind(const Window *window)
+{
+    return window
+        && !window->isDeleted()
+        && window->isClient() // managed by KWin (has placement control)
+        && !window->isInternal() // ki3's own overlays (split indicator, tab
+                                 // headers) and other internal windows report
+                                 // isClient() and windowType() == Normal too
+        && window->isNormalWindow()
+        && !window->isSpecialWindow()
+        && window->isResizable()
+        && window->output();
+}
+
 TileTreeController::TileTreeController(QObject *parent)
     : QObject(parent)
-    , m_nonTileableRules(loadNonTileableRules())
+    , m_floatingRules(loadFloatingRules())
+    , m_ignoredRules(builtinIgnoredRules())
     , m_gap(loadGap())
     , m_outerGap(loadOuterGap())
 {
@@ -104,12 +135,28 @@ const QSet<Window *> &TileTreeController::floatingWindows() const
 
 void TileTreeController::addFloating(Window *window)
 {
+    notePresentationBaseline(window); // idempotent; captures pre-ki3 state on first touch
     m_floatingWindows.insert(window);
 }
 
 void TileTreeController::removeFloating(Window *window)
 {
     m_floatingWindows.remove(window);
+}
+
+void TileTreeController::markManualOverride(Window *window)
+{
+    m_manualOverrides.insert(window);
+}
+
+bool TileTreeController::isManualOverride(Window *window) const
+{
+    return m_manualOverrides.contains(window);
+}
+
+void TileTreeController::dropManualOverride(Window *window)
+{
+    m_manualOverrides.remove(window);
 }
 
 bool TileTreeController::isGroup(CustomTile *tile) const
@@ -165,9 +212,9 @@ bool TileTreeController::leafWindowOccluded(Window *window) const
     return false;
 }
 
-bool TileTreeController::isNonTileable(const Window *window) const
+bool TileTreeController::isIgnored(const Window *window) const
 {
-    for (const WindowRule &rule : m_nonTileableRules) {
+    for (const WindowRule &rule : m_ignoredRules) {
         if (rule.matches(window)) {
             return true;
         }
@@ -175,39 +222,42 @@ bool TileTreeController::isNonTileable(const Window *window) const
     return false;
 }
 
+bool TileTreeController::matchesFloatingRule(const Window *window) const
+{
+    for (const WindowRule &rule : m_floatingRules) {
+        if (rule.matches(window)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TileTreeController::wantsFloating(const Window *window) const
+{
+    // isManageableKind()/isIgnored() gate this exactly like shouldManage()
+    // does: a window that isn't a manageable kind at all (a panel, a dock, ki3's
+    // own overlays, ...) or is built-in ignored must never be touched here
+    // either -- floating is not a fallback for "shouldManage() said no".
+    if (!isManageableKind(window) || isIgnored(window)) {
+        return false;
+    }
+    // i3 policy: sticky (all-desktops) and multi-desktop windows always
+    // float, never tile -- rootForWindow() ties a tiled window to exactly
+    // one root (window->desktops().constFirst()), so a window visible on
+    // several desktops at once has no single stable root to belong to.
+    if (window->desktops().size() != 1) {
+        return true;
+    }
+    return matchesFloatingRule(window);
+}
+
 bool TileTreeController::shouldManage(Window *window) const
 {
-    // isDeleted() checked first, deliberately, and by itself before any of
-    // the other (virtual) checks below: it's the one non-virtual accessor
-    // here (Window::isDeleted() -- window.h/.cpp -- a plain m_deleted flag
-    // read, no vtable dispatch), so it's safe to call even if window's
-    // vtable is in a bad way. Confirmed exploitable in practice: a
-    // reconcileOutputs() -> retileHomelessWindows() pass during output
-    // hot-unplug hit a Window still present in workspace()->windows() with
-    // m_deleted == true whose *virtual* isClient() call below crashed with
-    // a garbage vtable jump (landed in glibc's malloc arena -- see
-    // ki3-PLAN.md for the full gdb trace). Whatever left that window in
-    // this half-torn-down state, never touch anything virtual on it first.
-    return window
-        && !window->isDeleted()
-        && window->isClient() // managed by KWin (has placement control)
-        && !window->isInternal() // ki3's own overlays (split indicator, tab
-                                 // headers) and other internal windows report
-                                 // isClient() and windowType() == Normal too
-        && window->isNormalWindow()
-        && !window->isSpecialWindow()
-        && window->isResizable()
-        && window->output()
-        // i3 treats sticky (all-desktops) windows as floating, never tiled;
-        // apply the same policy to sticky *and* multi-desktop windows here.
-        // rootForWindow() associates a tiled window with exactly one root
-        // (window->desktops().constFirst()), so a window visible on several
-        // desktops at once has no stable single root to belong to -- picking
-        // "the first" (or, for all-desktops, "whichever is currently shown")
-        // is not a real semantic and would apply the wrong tile geometry
-        // across desktop switches (review finding M4).
+    return isManageableKind(window)
+        // i3 treats sticky (all-desktops) and multi-desktop windows as
+        // floating, never tiled -- see wantsFloating()'s doc comment.
         && window->desktops().size() == 1
-        && !isNonTileable(window)
+        && !isIgnored(window)
         && !m_floatingWindows.contains(window);
 }
 
@@ -436,33 +486,15 @@ void TileTreeController::applyPaddingToManagedRoots()
 
 void TileTreeController::reloadConfig()
 {
-    m_nonTileableRules = loadNonTileableRules();
+    m_floatingRules = loadFloatingRules();
     m_gap = loadGap();
     m_outerGap = loadOuterGap();
     applyPaddingToManagedRoots();
-
-    // Re-check every already-open window against the freshly-reloaded rules:
-    // shouldManage() depends on m_nonTileableRules, but until now nothing
-    // ever re-ran it for a window already sitting in whichever state it was
-    // in when it first opened, so editing rules (via ki3rc or the KCM) had no
-    // live effect -- only future windows honoured the change. Only windows
-    // whose shouldManage() result actually flipped do anything here;
-    // everything else is a no-op through isManaged()/shouldManage() already
-    // agreeing. Manually-floated windows are never touched: shouldManage()
-    // excludes them regardless of rules, via isFloating(), so they can never
-    // match the `!managed && !isFloating(window) && wanted` branch below.
-    for (Window *window : workspace()->windows()) {
-        if (!window || window->isDeleted() || !window->isClient()) {
-            continue;
-        }
-        const bool managed = isManaged(window);
-        const bool wanted = shouldManage(window);
-        if (managed && !wanted) {
-            forgetWindow(window);
-        } else if (!managed && !isFloating(window) && wanted) {
-            insertWindow(window);
-        }
-    }
+    // Re-checking every already-open window against the freshly-reloaded
+    // rules (so an edited rule actually floats/tiles an already-open window
+    // immediately) needs DecorationController for floating chrome, which
+    // this class deliberately has no dependency on -- see
+    // Ki3Tiler::reconcileFloatingState(), called right after this.
 }
 
 void TileTreeController::attachWindow(Window *window, CustomTile *leaf)

@@ -117,14 +117,26 @@ void Ki3Tiler::handleWindowAdded(Window *window)
     if (m_tileTree->isManaged(window)) {
         return;
     }
-    if (!m_tileTree->shouldManage(window)) {
-        if (window && m_tileTree->isNonTileable(window)) {
-            qCDebug(KWIN_KI3) << "not tiling" << window->resourceClass()
-                              << "- matched a non-tileable rule";
-        } else if (window && !window->isDeleted() && window->desktops().size() != 1) {
-            qCDebug(KWIN_KI3) << "not tiling" << window->resourceClass()
-                              << "- sticky/multi-desktop window, treating as floating (i3 policy)";
+    if (!window) {
+        return;
+    }
+    if (m_tileTree->isIgnored(window)) {
+        qCDebug(KWIN_KI3) << "ignoring" << window->resourceClass()
+                          << "- matched a built-in ignore rule";
+        return;
+    }
+    if (m_tileTree->wantsFloating(window)) {
+        if (window->desktops().size() != 1) {
+            qCDebug(KWIN_KI3) << "floating" << window->resourceClass()
+                              << "- sticky/multi-desktop window (i3 policy)";
+        } else {
+            qCDebug(KWIN_KI3) << "floating" << window->resourceClass()
+                              << "- matched a floating rule";
         }
+        floatWindow(window);
+        return;
+    }
+    if (!m_tileTree->shouldManage(window)) {
         return;
     }
     m_tileTree->insertWindow(window);
@@ -136,6 +148,7 @@ void Ki3Tiler::handleWindowRemoved(Window *window)
     m_decoration->destroyFloatChrome(window);
     m_tileTree->forgetWindow(window);
     m_tileTree->dropPresentationBaseline(window); // window is gone; drop its baseline
+    m_tileTree->dropManualOverride(window); // ditto -- don't let a reused pointer inherit it
     // Nothing left to resize (e.g. the last window on a desktop just closed):
     // leaving resize mode on would silently do nothing on the next keypress
     // and strand the border indicator's "mode is active" implication.
@@ -153,25 +166,67 @@ void Ki3Tiler::toggleFloating()
     if (!window) {
         return;
     }
+    // The user's explicit choice here always wins over rules/sticky status
+    // from now on, for the rest of this window's lifetime -- see
+    // TileTreeController::markManualOverride()'s doc comment.
+    m_tileTree->markManualOverride(window);
     if (m_tileTree->isFloating(window)) {
-        // Re-tile it.
-        m_tileTree->removeFloating(window);
-        m_decoration->destroyFloatChrome(window);
-        m_tileTree->restoreKeepAbove(window); // back to whatever it was before ki3 floated it
+        unfloatWindow(window);
         qCDebug(KWIN_KI3) << "unfloat" << window->caption();
-        m_tileTree->insertWindow(window);
     } else if (m_tileTree->isManaged(window)) {
-        // Detach from the tree; it keeps its current geometry and floats.
-        m_tileTree->addFloating(window);
+        detachAndFloat(window);
         qCDebug(KWIN_KI3) << "float" << window->caption();
-        m_tileTree->forgetWindow(window); // restores its pre-ki3 decoration policy; createFloatChrome() below re-hides it
-        window->requestTile(nullptr);
-        window->setNoBorder(true); // ki3 draws its own title bar instead of the native SSD
-        // i3/sway: floating windows always stay above tiled ones, even across
-        // focus changes -- KWin's default focus-follows-raise would otherwise
-        // sink this behind a tiled window the user clicks on next.
-        window->setKeepAbove(true);
-        m_decoration->createFloatChrome(window);
+    }
+}
+
+void Ki3Tiler::floatWindow(Window *window)
+{
+    m_tileTree->addFloating(window);
+    window->setNoBorder(true); // ki3 draws its own title bar instead of the native SSD
+    // i3/sway: floating windows always stay above tiled ones, even across
+    // focus changes -- KWin's default focus-follows-raise would otherwise
+    // sink this behind a tiled window the user clicks on next.
+    window->setKeepAbove(true);
+    m_decoration->createFloatChrome(window);
+}
+
+void Ki3Tiler::detachAndFloat(Window *window)
+{
+    // Detach from the tree; it keeps its current geometry and floats.
+    m_tileTree->forgetWindow(window); // restores its pre-ki3 decoration policy; floatWindow() below re-hides it
+    window->requestTile(nullptr);
+    floatWindow(window);
+}
+
+void Ki3Tiler::unfloatWindow(Window *window)
+{
+    m_tileTree->removeFloating(window);
+    m_decoration->destroyFloatChrome(window);
+    m_tileTree->restoreKeepAbove(window); // back to whatever it was before ki3 floated it
+    m_tileTree->insertWindow(window);
+}
+
+void Ki3Tiler::reconcileFloatingState()
+{
+    for (Window *window : workspace()->windows()) {
+        if (!window || window->isDeleted() || !window->isClient()) {
+            continue;
+        }
+        if (m_tileTree->isIgnored(window) || m_tileTree->isManualOverride(window)) {
+            continue;
+        }
+        const bool managed = m_tileTree->isManaged(window);
+        const bool floating = m_tileTree->isFloating(window);
+        const bool wantsFloat = m_tileTree->wantsFloating(window);
+        if (wantsFloat && managed) {
+            detachAndFloat(window);
+        } else if (wantsFloat && !managed && !floating) {
+            floatWindow(window);
+        } else if (!wantsFloat && floating) {
+            unfloatWindow(window);
+        } else if (!wantsFloat && !managed && !floating && m_tileTree->shouldManage(window)) {
+            m_tileTree->insertWindow(window);
+        }
     }
 }
 
@@ -286,6 +341,7 @@ bool Ki3Tiler::dbusSetActiveWindowOnAllDesktops(bool onAllDesktops)
 void Ki3Tiler::reloadConfig()
 {
     m_tileTree->reloadConfig();
+    reconcileFloatingState();
     m_workspace->loadWorkspaceOutputPreferences();
     m_decoration->reloadConfig();
 }
