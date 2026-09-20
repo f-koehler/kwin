@@ -298,8 +298,26 @@ Q_SIGNALS:
 private:
     struct TabState
     {
-        QList<QPointer<Window>> windows; // tab order
-        int active = 0; // index into windows of the visible one
+        // Tab order. Each item is a direct (Floating-direction, fully
+        // overlapping) child of the group's container tile, and may itself
+        // be a whole nested split subtree with several windows -- not just
+        // one window -- so tabbing a container that already has a nested
+        // split inside it preserves that structure instead of flattening
+        // every descendant window into one flat tab list. A plain "tab one
+        // window" item is the same shape, just a subtree of depth zero (a
+        // leaf). See wrapLeafInPlace(), groupContainerFor().
+        //
+        // Consequence: the group's *container* tile itself now always has
+        // children (its items), unlike the old flat design where it was a
+        // plain leaf directly owning every tab's window. currentLeaf() (and
+        // m_leafForWindow generally) resolves to a window's own actual leaf,
+        // which for a tab is always some *item* (or something inside one),
+        // never the container -- so any check for "is the current focus a
+        // tab/stack group" must walk up via groupContainerFor() and compare
+        // against that container's active item, never a plain
+        // `m_tabbed.contains(leaf)` on whatever currentLeaf() returned.
+        QList<QPointer<CustomTile>> items;
+        int active = 0; // index into items of the visible one
         ContainerMode mode = ContainerMode::Tabbed;
         // The container's split direction before it was collapsed, restored
         // on untab (i3/sway prev_split_layout).
@@ -443,6 +461,71 @@ private:
 
     /** Raise the active tab of @p tile above the others; prune dead windows. */
     void updateTabVisibility(CustomTile *tile);
+
+    /**
+     * Turn @p leaf (a plain leaf tile, no children) into a single-child
+     * layout of @p containerDirection, moving its windows onto a freshly
+     * created sole child (given @p childDirection as its own initial
+     * direction) that takes over @p leaf's old geometry unchanged -- so
+     * nothing visibly changes until a second item/window is later added
+     * alongside it. Updates m_leafForWindow/m_lastFocusedLeaf for the moved
+     * windows. Returns the new child.
+     *
+     * Shared by setSplitDirection() (i3 "split h"/"split v": immediately
+     * prepare the focused leaf for a same-direction sibling on the next
+     * insert, instead of the old global "remember direction, apply
+     * whenever" flag that could apply to the wrong container if focus moved
+     * on in between) and setContainerMode() (wrap a single window as the
+     * sole tab item before any sibling exists to tab it with).
+     */
+    CustomTile *wrapLeafInPlace(CustomTile *leaf, Tile::LayoutDirection containerDirection,
+                                Tile::LayoutDirection childDirection);
+
+    /**
+     * Walks up from @p tile to find an enclosing tab/stack group container,
+     * if any -- @p tile itself, or any ancestor up to (but not including)
+     * the group container, may be several levels deep inside a nested tab
+     * item's own subtree. Returns nullptr if @p tile isn't inside a group.
+     */
+    CustomTile *groupContainerFor(CustomTile *tile) const;
+
+    /**
+     * Like CustomTile::nextNonLayoutTileAt(), but a tab/stack group
+     * container counts as a leaf too (even though it has children -- see
+     * TabState::items) instead of being drilled into: a group must be
+     * targeted as one atomic unit by focus/move navigation, exactly like an
+     * ordinary window leaf, never as "whichever tab happens to be first".
+     */
+    CustomTile *nextGroupAwareTileAt(CustomTile *leaf, Qt::Edge edge) const;
+
+    /**
+     * The window a group's header/activation logic should treat as
+     * representing @p item: the one currently holding keyboard focus if
+     * it's inside @p item's subtree, else the first window found there
+     * (deterministic default for an inactive/never-focused nested item).
+     */
+    Window *representativeWindow(CustomTile *item) const;
+
+    /** Every window in @p item's subtree (itself included), in tree order. */
+    static QList<Window *> subtreeWindows(CustomTile *item);
+
+    /**
+     * The window that activating/focusing @p tile should actually raise:
+     * @p tile's own first window for a plain leaf, or the active tab's
+     * representativeWindow() if @p tile is a tab/stack group container.
+     */
+    Window *activationTargetFor(CustomTile *tile) const;
+
+    /**
+     * Drop @p item (one of @p container's TabState::items) from the group
+     * and physically remove its now-empty tile. If it was the last item,
+     * the group itself is dropped and @p container falls through to the
+     * ordinary now-genuinely-empty-leaf collapse (mirrors forgetWindow()'s
+     * plain-leaf path, since a Floating group container never triggers
+     * KWin's own single-child promotion -- see the doc comment on
+     * forgetWindow()'s group branch).
+     */
+    void removeGroupItem(CustomTile *container, CustomTile *item);
 
     /**
      * Recompute a tab/stack group's header: reserve the right header height

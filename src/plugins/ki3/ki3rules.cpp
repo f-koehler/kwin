@@ -14,9 +14,12 @@
 namespace KWin
 {
 
-WindowRule::WindowRule(Field field, const QString &glob)
+WindowRule::WindowRule(Field field, const QString &glob, const QString &secondGlob)
     : m_field(field)
     , m_pattern(QRegularExpression::fromWildcard(glob, Qt::CaseInsensitive))
+    , m_titlePattern(field == Field::ClassAndTitle
+                         ? QRegularExpression::fromWildcard(secondGlob, Qt::CaseInsensitive)
+                         : QRegularExpression())
 {
 }
 
@@ -30,18 +33,26 @@ WindowRule WindowRule::matchTitle(const QString &glob)
     return WindowRule(Field::Title, glob);
 }
 
+WindowRule WindowRule::matchClassAndTitle(const QString &classGlob, const QString &titleGlob)
+{
+    return WindowRule(Field::ClassAndTitle, classGlob, titleGlob);
+}
+
 bool WindowRule::matches(const Window *window) const
 {
     if (!window || !m_pattern.isValid()) {
         return false;
     }
+    // WM_CLASS carries two strings (instance + class); match either.
+    const bool classMatches = m_pattern.match(window->resourceClass()).hasMatch()
+        || m_pattern.match(window->resourceName()).hasMatch();
     switch (m_field) {
     case Field::Class:
-        // WM_CLASS carries two strings (instance + class); match either.
-        return m_pattern.match(window->resourceClass()).hasMatch()
-            || m_pattern.match(window->resourceName()).hasMatch();
+        return classMatches;
     case Field::Title:
         return m_pattern.match(window->caption()).hasMatch();
+    case Field::ClassAndTitle:
+        return classMatches && m_titlePattern.isValid() && m_titlePattern.match(window->caption()).hasMatch();
     }
     return false;
 }
@@ -88,6 +99,28 @@ QList<WindowRule> loadFloatingRules()
     };
     appendRules(group.readEntry("FloatingClasses", QStringList()), &WindowRule::matchClass);
     appendRules(group.readEntry("FloatingTitles", QStringList()), &WindowRule::matchTitle);
+
+    // Combined class+title rules: both must match the *same* window, unlike
+    // the independent OR'd lists above -- e.g. a title glob generic enough
+    // to also match unrelated windows ("*Settings*") can be pinned to one
+    // specific application's class instead of floating every window with a
+    // matching title regardless of what app it belongs to. Each entry is
+    // "classGlob\ttitleGlob" -- '\t' as an internal field separator that
+    // won't collide with real class/title text, the same trick
+    // kglobalshortcutsrc itself uses to pack multiple fields into one
+    // QStringList entry. Not yet exposed in the kcm_ki3/ki3-toggle-tiling
+    // rule editors (hand-edit ki3rc for now) -- see ki3-PLAN.md.
+    for (const QString &pair : group.readEntry("FloatingClassAndTitlePairs", QStringList())) {
+        const QStringList parts = pair.split(QLatin1Char('\t'));
+        if (parts.size() != 2) {
+            continue; // malformed entry (e.g. hand-edited without the separator)
+        }
+        const QString classGlob = parts[0].trimmed();
+        const QString titleGlob = parts[1].trimmed();
+        if (!classGlob.isEmpty() && !titleGlob.isEmpty()) {
+            rules.append(WindowRule::matchClassAndTitle(classGlob, titleGlob));
+        }
+    }
 
     return rules;
 }

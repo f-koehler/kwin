@@ -396,6 +396,141 @@ void TileTreeController::resyncLeafMapping(RootTile *root)
     });
 }
 
+CustomTile *TileTreeController::wrapLeafInPlace(CustomTile *leaf, Tile::LayoutDirection containerDirection,
+                                                Tile::LayoutDirection childDirection)
+{
+    const QList<Window *> windows = leaf->windows();
+    // createChildAt()'s first setRelativeGeometry() call is exempt from the
+    // neighbour-push engine (the new tile's own m_geometryLock starts true --
+    // see customtile.cpp), so seeding it with leaf's own full geometry here
+    // is safe regardless of leaf's own (soon-to-change) direction.
+    CustomTile *child = leaf->createChildAt(leaf->relativeGeometry(), childDirection, 0);
+    leaf->setLayoutDirection(containerDirection);
+    for (Window *w : windows) {
+        // manage() evacuates a window from wherever it's currently tracked
+        // (here: leaf itself) automatically -- see Tile::manage().
+        attachWindow(w, child);
+        m_leafForWindow[w] = child;
+    }
+    // Unconditional, not just "if m_lastFocusedLeaf == leaf": both call
+    // sites (setSplitDirection(), setContainerMode()) pass currentLeaf()'s
+    // result, i.e. whatever's genuinely focused right now, so the next
+    // insert belongs at the freshly wrapped child regardless of what
+    // m_lastFocusedLeaf happened to hold before -- e.g. right after tabbing
+    // a container, m_lastFocusedLeaf is the group's own container (see
+    // setContainerMode()), never equal to `leaf` (the active tab's own
+    // item), so the old conditional silently left the *group* as the next
+    // insert target instead of the item just wrapped for a nested split.
+    m_lastFocusedLeaf = child;
+    return child;
+}
+
+CustomTile *TileTreeController::groupContainerFor(CustomTile *tile) const
+{
+    for (CustomTile *t = tile; t; t = static_cast<CustomTile *>(t->parentTile())) {
+        if (m_tabbed.contains(t)) {
+            return t;
+        }
+    }
+    return nullptr;
+}
+
+CustomTile *TileTreeController::nextGroupAwareTileAt(CustomTile *leaf, Qt::Edge edge) const
+{
+    // A tab/stack group's own item has no real positional relationship to
+    // its sibling items -- they're Floating (fully overlapping), all
+    // sharing the container's own rect -- so nextTileAt()'s generic
+    // row/column math is meaningless applied directly to one (Floating
+    // falls through to its "single row of N columns" default case, so it
+    // still returns *something*, just nonsense: e.g. a stacked group's 2nd
+    // tab "has a LeftEdge neighbour", its 1st tab). Pivot from the group's
+    // own container instead whenever @p leaf turns out to be one of its
+    // items, exactly as if @p leaf itself were what's being navigated from.
+    auto *itemParent = static_cast<CustomTile *>(leaf->parentTile());
+    CustomTile *pivot = (itemParent && m_tabbed.contains(itemParent)) ? itemParent : leaf;
+
+    CustomTile *tile = pivot->nextTileAt(edge);
+    while (tile && tile->isLayout() && !m_tabbed.contains(tile)) {
+        tile = qobject_cast<CustomTile *>(tile->childTiles().first());
+    }
+    return tile;
+}
+
+Window *TileTreeController::representativeWindow(CustomTile *item) const
+{
+    if (!item) {
+        return nullptr;
+    }
+    Window *active = workspace()->activeWindow();
+    Window *first = nullptr;
+    Window *focused = nullptr;
+    item->visitDescendants([&](Tile *t) {
+        for (Window *w : t->windows()) {
+            if (!first) {
+                first = w;
+            }
+            if (w == active) {
+                focused = w;
+            }
+        }
+    });
+    return focused ? focused : first;
+}
+
+QList<Window *> TileTreeController::subtreeWindows(CustomTile *item)
+{
+    QList<Window *> out;
+    if (!item) {
+        return out;
+    }
+    item->visitDescendants([&out](Tile *t) {
+        out.append(t->windows());
+    });
+    return out;
+}
+
+Window *TileTreeController::activationTargetFor(CustomTile *tile) const
+{
+    if (auto it = m_tabbed.constFind(tile); it != m_tabbed.constEnd()) {
+        return representativeWindow(it->items.value(it->active));
+    }
+    return tile->windows().isEmpty() ? nullptr : tile->windows().constFirst();
+}
+
+void TileTreeController::removeGroupItem(CustomTile *container, CustomTile *item)
+{
+    auto it = m_tabbed.find(container);
+    if (it == m_tabbed.end()) {
+        return;
+    }
+    it->items.removeAll(QPointer<CustomTile>(item));
+
+    if (!it->items.isEmpty()) {
+        it->active = std::clamp(it->active, 0, int(it->items.size()) - 1);
+        item->remove(); // Floating parent: no core-side redistribute/promotion
+        refreshGroup(container);
+        return;
+    }
+
+    // Last tab gone: drop the group and fall through to the ordinary
+    // now-genuinely-empty-leaf collapse, exactly like a plain leaf's last
+    // window closing (see forgetWindow()).
+    destroyGroupHeader(container);
+    m_tabbed.erase(it);
+    item->remove();
+
+    QPointer<CustomTile> parent = static_cast<CustomTile *>(container->parentTile());
+    auto *root = static_cast<RootTile *>(container->rootTile());
+    if (!container->isRoot() && container->childCount() == 0) {
+        qCDebug(KWIN_KI3) << "collapse empty group container";
+        container->remove();
+        resyncLeafMapping(root);
+        if (parent && parent->isLayout()) {
+            redistributeEvenly(parent);
+        }
+    }
+}
+
 CustomTile *TileTreeController::firstLeaf(RootTile *root)
 {
     CustomTile *leaf = nullptr;
@@ -539,9 +674,12 @@ void TileTreeController::insertWindow(Window *window, LogicalOutput *outputHint)
     }
 
     // Pick the target leaf: the last focused leaf if it's in this root tree,
-    // otherwise the first available leaf.
+    // otherwise the first available leaf. A tab/stack group container is a
+    // valid target too even though it has children (its items) -- unlike a
+    // plain layout node, placeWindowAt() knows to join it as a new tab.
     CustomTile *target = nullptr;
-    if (m_lastFocusedLeaf && m_lastFocusedLeaf->rootTile() == root && m_lastFocusedLeaf->childCount() == 0) {
+    if (m_lastFocusedLeaf && m_lastFocusedLeaf->rootTile() == root
+        && (m_lastFocusedLeaf->childCount() == 0 || m_tabbed.contains(m_lastFocusedLeaf))) {
         target = m_lastFocusedLeaf;
     } else {
         target = firstLeaf(root);
@@ -553,30 +691,49 @@ void TileTreeController::insertWindow(Window *window, LogicalOutput *outputHint)
 void TileTreeController::placeWindowAt(Window *window, CustomTile *target, bool insertBefore)
 {
     // If the chosen container is a tab/stack group, the window joins it as a
-    // new tab rather than splitting the tree.
+    // new tab item -- a fresh Floating (fully overlapping) child of the
+    // group tile, not managed directly on the group tile itself, so a later
+    // tab can be a whole nested split without special-casing "the first tab
+    // is different" (see TabState::items' doc comment).
     if (auto it = m_tabbed.find(target); it != m_tabbed.end()) {
-        attachWindow(window, target);
-        it->windows.append(window);
-        it->active = it->windows.size() - 1;
-        m_leafForWindow[window] = target;
-        m_lastFocusedLeaf = target;
+        const int position = insertBefore ? 0 : target->childCount();
+        CustomTile *item = target->createChildAt(target->relativeGeometry(), Tile::LayoutDirection::Floating, position);
+        attachWindow(window, item);
+        m_leafForWindow[window] = item;
+        it->items.insert(position, item);
+        it->active = position;
+        m_lastFocusedLeaf = item;
         window->setNoBorder(true); // hide its own title bar; ki3's tab bar shows instead
-        qCDebug(KWIN_KI3) << "insert (tab):" << window->caption() << "tabs now" << it->windows.size();
+        qCDebug(KWIN_KI3) << "insert (tab):" << window->caption() << "tabs now" << it->items.size();
         refreshGroup(target);
         Q_EMIT layoutChanged();
         return;
     }
 
-    // i3 behaviour: if the target leaf already lives in a layout running in the
-    // current split direction, add the window as a *sibling* and rebalance all
-    // of them evenly (1:1:1...), rather than nesting + halving the target cell
-    // (which would give 2:1:1). Only nest when the direction differs.
+    // i3 behaviour: if the target leaf already lives in a layout with an
+    // established H/V direction of its own, add the window as a *sibling*
+    // and rebalance all of them evenly (1:1:1...), rather than nesting +
+    // halving the target cell (which would give 2:1:1). Only nest when the
+    // parent has no established direction yet (below).
+    //
+    // Deliberately the *parent's own* direction here, not m_splitDirection:
+    // once wrapLeafInPlace() (setSplitDirection()'s immediate wrap) has
+    // already given a specific leaf's parent the direction the user asked
+    // for, that parent's own direction is the authoritative, correctly-
+    // *scoped* record of it -- consulting the still-live global
+    // m_splitDirection instead would leak that leaf-specific priming onto
+    // every *other*, unrelated leaf's insert/move too (the exact bug
+    // fixed by anchoring setSplitDirection() to the focused leaf in the
+    // first place would resurface here for anything focus moved on to
+    // without an intervening insert).
     auto *parent = static_cast<CustomTile *>(target->parentTile());
-    if (parent && parent->isLayout() && parent->layoutDirection() == m_splitDirection
+    if (parent && parent->isLayout()
+        && (parent->layoutDirection() == Tile::LayoutDirection::Horizontal
+            || parent->layoutDirection() == Tile::LayoutDirection::Vertical)
         && target->childCount() == 0) {
         const int position = insertBefore ? target->row() : target->row() + 1;
         CustomTile *forNew = parent->createChildAt(target->relativeGeometry(),
-                                                   m_splitDirection, position);
+                                                   parent->layoutDirection(), position);
         attachWindow(window, forNew);
         m_leafForWindow[window] = forNew;
         m_lastFocusedLeaf = forNew;
@@ -645,40 +802,54 @@ void TileTreeController::forgetWindow(Window *window)
     // it may have been borderless already (user choice or a WindowRule).
     restoreDecorationPolicy(window);
 
-    // Tab/stack group member: drop it from the group. As long as at least one
-    // tab remains, the leaf stays put (still owns the survivors) — only refresh
-    // which tab shows. If it was the last, fall through to collapse the leaf.
-    if (auto ti = m_tabbed.find(tile); ti != m_tabbed.end()) {
-        tile->forget(window);
-        ti->windows.removeAll(window);
-        if (!ti->windows.isEmpty()) {
-            ti->active = std::clamp(ti->active, 0, int(ti->windows.size()) - 1);
-            m_lastFocusedLeaf = tile;
-            refreshGroup(tile);
+    // If this leaf is somewhere inside a tab/stack group's subtree, note it
+    // now (before forget()/remove() below can cascade-promote a sibling and
+    // change what's actually at `tile`) so a still-nonempty item's header
+    // gets refreshed (its representative window may have changed) even when
+    // the leaf that emptied isn't the item's own root.
+    CustomTile *container = groupContainerFor(tile);
+    tile->forget(window);
+
+    if (!tile->isRoot() && tile->childCount() == 0 && tile->windows().isEmpty()) {
+        // Emptied all the way down. If `tile` is itself one of the group's
+        // own tab items (not just somewhere inside one -- a nested item with
+        // a surviving sibling window is handled by the cascade-promotion
+        // case below instead), drop it from the group: a group's Floating
+        // (overlapping) children never trigger KWin's own single-child
+        // promotion/redistribution, so that machinery doesn't apply here.
+        if (container && static_cast<CustomTile *>(tile->parentTile()) == container) {
+            removeGroupItem(container, tile);
             Q_EMIT layoutChanged();
             return;
         }
-        destroyGroupHeader(tile); // last tab gone: drop header + clear reserve
-        m_tabbed.erase(ti);
-    }
 
-    // Detach the window if still attached, then collapse the empty leaf.
-    // CustomTile::remove() only stretches the immediate prev/next neighbour into
-    // the freed space (customtile.cpp:290-324); i3 instead shares it across all
-    // remaining siblings, so we rebalance the parent evenly afterwards.
-    QPointer<CustomTile> parent = static_cast<CustomTile *>(tile->parentTile());
-    auto *root = static_cast<RootTile *>(tile->rootTile());
-    tile->forget(window);
-    if (!tile->isRoot() && tile->childCount() == 0 && tile->windows().isEmpty()) {
+        // Plain tiling leaf (or the last surviving leaf deep inside a group
+        // item's own nested split): collapse it. CustomTile::remove() only
+        // stretches the immediate prev/next neighbour into the freed space
+        // (customtile.cpp:290-324); i3 instead shares it across all
+        // remaining siblings, so we rebalance the parent evenly afterwards.
+        // A Floating parent (a group's own container -- by construction
+        // never reached here directly, since a leaf whose parent *is* a
+        // group container is always one of its items and is handled by the
+        // removeGroupItem() branch above, but guarded anyway) must never go
+        // through this: redistributeEvenly() reads layoutDirection() to pick
+        // an axis and would otherwise mis-arrange its overlapping children.
         qCDebug(KWIN_KI3) << "collapse empty leaf left by" << window->caption();
+        QPointer<CustomTile> parent = static_cast<CustomTile *>(tile->parentTile());
+        auto *root = static_cast<RootTile *>(tile->rootTile());
         tile->remove();
         // remove() may have promoted a single-child layout, migrating its window
         // into the parent tile and invalidating our leaf mapping; repair it
         // before redistributing so a later close finds the right leaf.
         resyncLeafMapping(root);
-        if (parent && parent->isLayout()) {
+        if (parent && parent->isLayout() && parent->layoutDirection() != Tile::LayoutDirection::Floating) {
             redistributeEvenly(parent);
         }
+    } else if (container) {
+        // The leaf survived (a sibling within a nested item's own split
+        // absorbed the freed space) -- the item's representative window may
+        // have changed, so its tab title needs a repaint.
+        refreshGroup(container);
     }
     Q_EMIT layoutChanged();
 }

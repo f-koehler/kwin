@@ -19,6 +19,36 @@
 namespace KWin
 {
 
+// Applies @p px as Tile::headerReserve() to every leaf within @p item's
+// subtree whose own top edge coincides with @p item's -- i.e. it's visually
+// adjacent to the header strip drawn above the whole item -- and clears it
+// (0px) on every other leaf. Necessary because under the subtree-item model
+// an item's own tile may have no windows of its own to shrink (a nested
+// item's windows live on its own internal leaves -- see TabState::items'
+// doc comment), and a leaf that *isn't* at the item's own top (e.g. the
+// bottom half of a nested vertical split) must not also get the reserve, or
+// it would be double-shrunk on top of its own internal split boundary.
+// Exact: Tile::headerReserve() itself works purely in absolute pixels, so
+// this never needs (and never introduces) the rounding a relative-geometry
+// resize would.
+static void applyHeaderReserveToTopLeaves(CustomTile *item, qreal px)
+{
+    if (!item) {
+        return;
+    }
+    const qreal top = item->relativeGeometry().top();
+    item->visitDescendants([top, px](Tile *t) {
+        if (t->childCount() != 0) {
+            return;
+        }
+        auto *leaf = static_cast<CustomTile *>(t);
+        // +1.0 sidesteps qFuzzyCompare()'s documented unreliability for
+        // values very close to zero (a leaf flush with the output's own top
+        // edge has top() == 0.0).
+        leaf->setHeaderReserve(qFuzzyCompare(leaf->relativeGeometry().top() + 1.0, top + 1.0) ? px : 0.0);
+    });
+}
+
 void TileTreeController::setContainerMode(ContainerMode mode)
 {
     CustomTile *leaf = currentLeaf();
@@ -26,85 +56,77 @@ void TileTreeController::setContainerMode(ContainerMode mode)
         return;
     }
 
-    // Already a tab/stack group: the same key toggles back to a split, the other
-    // key flips the mode in place.
-    if (auto it = m_tabbed.find(leaf); it != m_tabbed.end()) {
-        if (it->mode == mode) {
-            untabContainer(leaf);
-        } else {
-            it->mode = mode;
-            qCInfo(KWIN_KI3) << "container mode ->" << (mode == ContainerMode::Tabbed ? "tabbed" : "stacked");
-            refreshGroup(leaf);
-            Q_EMIT layoutChanged();
+    // Already a tab/stack group (leaf is that group's own active item -- see
+    // groupContainerFor()'s doc comment on why this can't just be
+    // m_tabbed.contains(leaf) any more): the same key toggles back to a
+    // split, the other key flips the mode in place.
+    if (CustomTile *existingContainer = groupContainerFor(leaf)) {
+        if (auto it = m_tabbed.find(existingContainer);
+            it != m_tabbed.end() && it->items.value(it->active) == leaf) {
+            if (it->mode == mode) {
+                untabContainer(existingContainer);
+            } else {
+                it->mode = mode;
+                qCInfo(KWIN_KI3) << "container mode ->" << (mode == ContainerMode::Tabbed ? "tabbed" : "stacked");
+                refreshGroup(existingContainer);
+                Q_EMIT layoutChanged();
+            }
+            return;
         }
-        return;
     }
 
     // The container to collapse is the focused leaf's parent layout, or the leaf
-    // itself when it is the root (single window: nothing to collapse, but we
-    // still record the mode so a later-opened window joins as a tab).
-    auto *container = static_cast<CustomTile *>(leaf->parentTile());
-    if (!container) {
+    // itself when it is the root (single window: nothing to collapse yet, but we
+    // still record the mode so a later-opened window joins as a 2nd tab).
+    CustomTile *container = static_cast<CustomTile *>(leaf->parentTile());
+    QList<CustomTile *> items;
+    Tile::LayoutDirection prevSplit = Tile::LayoutDirection::Horizontal;
+
+    if (!container || !container->isLayout() || container->childCount() < 2) {
+        // No existing siblings to group with -- wrap the focused leaf as the
+        // sole tab item first (same primitive setSplitDirection() uses to
+        // prepare a leaf for a same-direction sibling), so a later-inserted
+        // window has a real group tile (`leaf`, now Floating) to join.
         container = leaf;
+        items = {wrapLeafInPlace(container, Tile::LayoutDirection::Floating, Tile::LayoutDirection::Floating)};
+    } else {
+        // The container's existing children become the tab items *as-is* --
+        // each keeps its own subtree intact (a nested split stays nested)
+        // instead of flattening every descendant window into one flat tab
+        // list the way this used to work. Only their *geometry* changes
+        // (below): every item is resized to fill the whole container so the
+        // active one appears to occupy it entirely, matching how KWin
+        // already renders several windows sharing one tile.
+        prevSplit = (container->layoutDirection() == Tile::LayoutDirection::Vertical)
+            ? Tile::LayoutDirection::Vertical
+            : Tile::LayoutDirection::Horizontal;
+        for (Tile *child : container->childTiles()) {
+            items.append(static_cast<CustomTile *>(child));
+        }
     }
+
     Window *active = workspace()->activeWindow();
-
-    // Remember the container's split direction so untab can restore it
-    // (prev_split_layout). Only h/v are meaningful; default to horizontal.
-    const Tile::LayoutDirection prevSplit =
-        (container->layoutDirection() == Tile::LayoutDirection::Vertical)
-        ? Tile::LayoutDirection::Vertical
-        : Tile::LayoutDirection::Horizontal;
-
-    // Every window in the container's subtree, in tree order (visitDescendants
-    // includes the container itself, covering the single-window root case).
-    QList<Window *> windows;
-    container->visitDescendants([&windows](Tile *t) {
-        if (t->childCount() == 0) {
-            for (Window *w : t->windows()) {
-                if (!windows.contains(w)) {
-                    windows.append(w);
-                }
-            }
+    container->setLayoutDirection(Tile::LayoutDirection::Floating);
+    for (CustomTile *item : std::as_const(items)) {
+        setGeometryRecursive(item, container->relativeGeometry());
+        for (Window *w : subtreeWindows(item)) {
+            w->setNoBorder(true); // hide native title bars; ki3's tab bar shows instead
         }
-    });
-    if (windows.isEmpty()) {
-        return;
-    }
-
-    // Move every window into the container tile (they now share its full rect),
-    // then tear the empty child leaves down so the container becomes one leaf
-    // owning them all. Evacuating BEFORE removing is essential: CustomTile::
-    // remove() re-homes any window still on a removed tile via pick() and can
-    // cascade-promote a lone survivor (customtile.cpp:326-340) — we must never
-    // let it see a live window.
-    for (Window *w : windows) {
-        container->manage(w);
-    }
-    while (container->childCount() > 0) {
-        CustomTile *victim = nullptr;
-        container->visitDescendants([&victim, container](Tile *t) {
-            if (!victim && t != container && t->childCount() == 0) {
-                victim = static_cast<CustomTile *>(t);
-            }
-        });
-        if (!victim) {
-            break; // safety: no removable leaf found
-        }
-        victim->remove();
     }
 
     TabState st;
     st.mode = mode;
     st.prevSplit = prevSplit;
-    for (Window *w : windows) {
-        st.windows.append(w);
-        m_leafForWindow[w] = container;
-        // Hide the window's own title bar so only ki3's tab/stack header shows
-        // (the i3 look). No-op for client-side-decorated apps.
-        w->setNoBorder(true);
+    for (CustomTile *item : std::as_const(items)) {
+        st.items.append(item);
     }
-    st.active = std::max(0, int(windows.indexOf(active)));
+    st.active = 0;
+    for (int i = 0; i < items.size(); ++i) {
+        if (subtreeWindows(items[i]).contains(active)) {
+            st.active = i;
+            break;
+        }
+    }
     m_tabbed.insert(container, st);
     // Drop the entry the instant the container tile is destroyed (e.g. an
     // output unplug tears down its tile tree), so the raw-pointer key never
@@ -114,7 +136,7 @@ void TileTreeController::setContainerMode(ContainerMode mode)
     m_lastFocusedLeaf = container;
 
     qCInfo(KWIN_KI3) << (mode == ContainerMode::Tabbed ? "tabbed" : "stacked")
-                     << windows.size() << "windows; active" << st.active;
+                     << items.size() << "items; active" << st.active;
     refreshGroup(container);
     Q_EMIT layoutChanged();
 }
@@ -125,53 +147,78 @@ void TileTreeController::untabContainer(CustomTile *tile)
     if (it == m_tabbed.end()) {
         return;
     }
-    QList<Window *> windows;
-    for (const QPointer<Window> &w : it->windows) {
-        if (w) {
-            windows.append(w);
+    QList<CustomTile *> items;
+    for (const QPointer<CustomTile> &item : it->items) {
+        if (item) {
+            items.append(item);
         }
     }
     const Tile::LayoutDirection prevSplit = it->prevSplit;
+    Window *activeWindow = representativeWindow(it->items.value(it->active));
     destroyGroupHeader(tile); // drop the header + clear the tile's header reserve
     m_tabbed.erase(it);
-    // Windows here stay in the tile tree (as the lone leaf, or re-inserted
-    // below into a split) — since default/split layouts hide title bars too
-    // (see ki3-PLAN.md 2026-07-04), they must stay borderless, not regain
-    // their native SSD title bar.
-    if (windows.size() < 2) {
-        return; // a lone (or empty) group is already a plain leaf
+
+    if (items.size() < 2) {
+        // A lone (or empty) group: fold its sole item's subtree back up into
+        // `tile` itself (undo wrapLeafInPlace()) rather than leaving a
+        // pointless single-child layout behind. An empty group (shouldn't
+        // normally happen -- forgetWindow()/removeGroupItem() erase it
+        // instead once it hits zero) just falls through with nothing to do.
+        if (items.size() == 1 && items.first()->parentTile() == tile) {
+            CustomTile *item = items.first();
+            const QList<Window *> windows = item->windows();
+            const bool itemIsLayout = item->childCount() > 0;
+            if (!itemIsLayout) {
+                for (Window *w : windows) {
+                    attachWindow(w, tile);
+                    m_leafForWindow[w] = tile;
+                }
+                item->remove();
+                tile->setLayoutDirection(prevSplit);
+                if (m_lastFocusedLeaf == item) {
+                    m_lastFocusedLeaf = tile;
+                }
+            } else {
+                // The sole item is itself a real nested split -- keep it as
+                // a genuine child rather than trying to merge two levels of
+                // structure into one tile; just drop the group's own
+                // Floating wrapper direction so a later split/insert next to
+                // it behaves normally. `tile` stays a single-child layout
+                // (the same, already-supported shape setSplitDirection()'s
+                // wrap produces), no separate un-wrap needed.
+                tile->setLayoutDirection(prevSplit);
+                m_lastFocusedLeaf = item;
+            }
+        }
+        Q_EMIT layoutChanged();
+        return;
     }
 
-    // Keep the first window on the tile; detach the rest and feed them back
-    // through the normal split path so they fan out into an even split. Restore
-    // the pre-tab split direction (prev_split_layout) for the duration.
-    Window *first = windows.constFirst();
-    for (int i = 1; i < windows.size(); ++i) {
-        tile->forget(windows[i]);
-        m_leafForWindow.remove(windows[i]);
-    }
-    m_leafForWindow[first] = tile;
-    m_lastFocusedLeaf = tile;
-    const Tile::LayoutDirection savedDirection = m_splitDirection;
-    m_splitDirection = prevSplit;
-    qCInfo(KWIN_KI3) << "untab" << windows.size() << "windows back to split"
+    // 2+ items: turn the Floating (overlapping) container into a genuine
+    // split of `prevSplit`, redistributing the *existing* item tiles evenly
+    // -- redistributeEvenly()/setGeometryRecursive() remap each item's own
+    // internal structure proportionally into its new (smaller) slice, so a
+    // nested item's split ratios survive the round trip untouched. No
+    // reinsertion needed: the items were always real children of `tile`.
+    tile->setLayoutDirection(prevSplit);
+    redistributeEvenly(tile);
+    m_lastFocusedLeaf = activeWindow && m_leafForWindow.contains(activeWindow)
+        ? m_leafForWindow.value(activeWindow)
+        : QPointer<CustomTile>(tile);
+    qCInfo(KWIN_KI3) << "untab" << items.size() << "items back to split"
                      << (prevSplit == Tile::LayoutDirection::Horizontal ? "H" : "V");
-    for (int i = 1; i < windows.size(); ++i) {
-        insertWindow(windows[i]);
-    }
-    m_splitDirection = savedDirection;
     Q_EMIT layoutChanged();
 }
 
 void TileTreeController::cycleTab(CustomTile *tile, int delta)
 {
     auto it = m_tabbed.find(tile);
-    if (it == m_tabbed.end() || it->windows.isEmpty()) {
+    if (it == m_tabbed.end() || it->items.isEmpty()) {
         return;
     }
-    const int n = it->windows.size();
+    const int n = it->items.size();
     it->active = ((it->active + delta) % n + n) % n; // wrap both ways
-    Window *active = it->windows[it->active];
+    Window *active = representativeWindow(it->items[it->active]);
     qCDebug(KWIN_KI3) << "tab cycle -> active" << it->active;
     refreshGroup(tile);
     if (active) {
@@ -187,24 +234,27 @@ void TileTreeController::updateTabVisibility(CustomTile *tile)
     }
     TabState &st = it.value();
 
-    // Drop windows that vanished, keeping active pointing at a live tab.
-    for (int i = st.windows.size() - 1; i >= 0; --i) {
-        if (!st.windows[i]) {
-            st.windows.removeAt(i);
+    // Drop items that vanished, keeping active pointing at a live one.
+    // Items are normally removed explicitly (removeGroupItem()), so this is
+    // defensive -- mirrors the old flat design's same defensive prune.
+    for (int i = st.items.size() - 1; i >= 0; --i) {
+        if (!st.items[i]) {
+            st.items.removeAt(i);
             if (i < st.active || (i == st.active && st.active > 0)) {
                 --st.active;
             }
         }
     }
-    if (st.windows.isEmpty()) {
+    if (st.items.isEmpty()) {
         m_tabbed.erase(it);
         return;
     }
-    st.active = std::clamp(st.active, 0, int(st.windows.size()) - 1);
+    st.active = std::clamp(st.active, 0, int(st.items.size()) - 1);
 
-    // Raise the active tab above its peers. All group windows share the tile
-    // rect, so raising the active one occludes the rest (T0: visibility by
-    // stacking; truly hiding inactive tabs is a later refinement).
+    // Raise every window in the active item's subtree above every other
+    // item's windows. All items share the container's full rect, so this is
+    // exactly the old "visibility by stacking" scheme, just applied to a
+    // (possibly multi-window) subtree instead of a single window.
     //
     // Exception: if focus is currently on a window ki3 doesn't manage (a
     // floating dialog such as a gpg/pinentry prompt, or a user-floated
@@ -212,15 +262,19 @@ void TileTreeController::updateTabVisibility(CustomTile *tile)
     // group on each activation, so without this guard a freshly mapped
     // pinentry dialog gets buried under this group's stale active tab the
     // instant it steals focus.
-    if (Window *active = st.windows[st.active]) {
+    CustomTile *activeItem = st.items[st.active];
+    const QList<Window *> activeWindows = subtreeWindows(activeItem);
+    if (!activeWindows.isEmpty()) {
         Window *globalActive = workspace()->activeWindow();
-        const bool wouldBuryFocusedDialog = globalActive && globalActive != active
+        const bool wouldBuryFocusedDialog = globalActive && !activeWindows.contains(globalActive)
             && !m_leafForWindow.contains(globalActive);
         if (!wouldBuryFocusedDialog) {
-            workspace()->raiseWindow(active);
+            for (Window *w : activeWindows) {
+                workspace()->raiseWindow(w);
+            }
         }
     }
-    qCDebug(KWIN_KI3) << "tab visibility:" << st.windows.size() << "tabs, active" << st.active;
+    qCDebug(KWIN_KI3) << "tab visibility:" << st.items.size() << "tabs, active" << st.active;
 }
 
 void TileTreeController::refreshGroup(CustomTile *tile)
@@ -237,7 +291,7 @@ void TileTreeController::refreshGroup(CustomTile *tile)
         m_refreshingGroups.remove(tile);
     });
 
-    // Prune dead windows, raise the active tab (shared T0 logic). May erase the
+    // Prune dead items, raise the active tab (shared T0 logic). May erase the
     // group if it emptied.
     updateTabVisibility(tile);
     auto it = m_tabbed.find(tile);
@@ -248,10 +302,34 @@ void TileTreeController::refreshGroup(CustomTile *tile)
     TabState &st = it.value();
 
     const bool stacked = (st.mode == ContainerMode::Stacked);
-    const qreal headerPx = Ki3Header::heightForTabs(st.windows.size(), stacked);
+    const qreal headerPx = Ki3Header::heightForTabs(st.items.size(), stacked);
 
-    // Reserve the header strip on the tile so its windows lay out below it.
+    // Reserve the header strip. Tile::setHeaderReserve()'s own auto-resize
+    // only affects windows managed *directly* on the reserve-holding tile,
+    // which under the subtree-item model (see TabState::items' doc comment)
+    // is never `tile` itself -- so it's kept here purely for windowGeometry()'s
+    // header-*position* math below (content.top() needs to already reflect
+    // the reserve for the header to land exactly above it, not past the
+    // tile's own edge). The windows themselves are pushed down/shrunk by
+    // applying the *same* headerReserve directly to whichever leaf(ves)
+    // within each item's own subtree actually sit at its top edge, next --
+    // exact (Tile::headerReserve() works in absolute pixels already), unlike
+    // a relative-geometry resize computed from a headerPx/outputHeight
+    // fraction, which rounds and was off by a couple of px in practice.
+    // Every item is *also* kept resized to `tile`'s own current geometry
+    // (unrelated to the header -- CustomTile::setRelativeGeometry()'s
+    // generic Floating-child handling only intersects with the old geometry,
+    // which isn't a real substitute for "always fill the parent" here) so a
+    // sibling closing/appearing elsewhere in the tree that resizes `tile`
+    // keeps every item filling it exactly, nested split ratios included.
     tile->setHeaderReserve(headerPx);
+    for (const QPointer<CustomTile> &item : std::as_const(st.items)) {
+        if (!item) {
+            continue;
+        }
+        setGeometryRecursive(item, tile->relativeGeometry());
+        applyHeaderReserveToTopLeaves(item, headerPx);
+    }
 
     if (!st.header) {
         st.header = std::make_shared<Ki3Header>();
@@ -267,7 +345,7 @@ void TileTreeController::refreshGroup(CustomTile *tile)
     }
 
     // Hide the header when the visible tab isn't actually on screen.
-    Window *active = st.windows[st.active];
+    Window *active = representativeWindow(st.items[st.active]);
     if (!active || !active->isShown() || !active->isOnCurrentDesktop()) {
         st.header->hide();
         return;
@@ -285,8 +363,9 @@ void TileTreeController::refreshGroup(CustomTile *tile)
                             content.width() + 2 * m_indicatorThickness, headerPx);
 
     QStringList titles;
-    titles.reserve(st.windows.size());
-    for (const QPointer<Window> &w : st.windows) {
+    titles.reserve(st.items.size());
+    for (const QPointer<CustomTile> &item : st.items) {
+        Window *w = item ? representativeWindow(item) : nullptr;
         titles << (w ? w->caption() : QString());
     }
     const bool focused = (workspace()->activeWindow() == active);
@@ -294,7 +373,7 @@ void TileTreeController::refreshGroup(CustomTile *tile)
     st.header->setTabs(titles, st.active, stacked, focused);
     st.header->show();
 
-    qCDebug(KWIN_KI3) << "group header:" << st.windows.size() << (stacked ? "stacked" : "tabbed")
+    qCDebug(KWIN_KI3) << "group header:" << st.items.size() << (stacked ? "stacked" : "tabbed")
                       << "active" << st.active << "reserve" << headerPx;
 }
 
@@ -363,11 +442,11 @@ void TileTreeController::onGroupTileDestroyed(QObject *tile)
 void TileTreeController::activateTab(CustomTile *tile, int index)
 {
     auto it = m_tabbed.find(tile);
-    if (it == m_tabbed.end() || index < 0 || index >= it->windows.size()) {
+    if (it == m_tabbed.end() || index < 0 || index >= it->items.size()) {
         return;
     }
     it->active = index;
-    Window *window = it->windows[index];
+    Window *window = representativeWindow(it->items[index]);
     qCDebug(KWIN_KI3) << "tab click -> active" << index;
     refreshGroup(tile);
     if (window) {

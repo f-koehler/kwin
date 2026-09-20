@@ -16,15 +16,17 @@ namespace KWin
 class Window;
 
 /**
- * A single rule that matches a window by one of its attributes. Used to classify
- * windows ki3 should treat specially — currently either to always float them
- * (user-configurable, see loadFloatingRules()) or to never touch them at all
- * (built-in only, see builtinIgnoredRules()).
+ * A single rule that matches a window by one or two of its attributes. Used
+ * to classify windows ki3 should treat specially — currently either to
+ * always float them (user-configurable, see loadFloatingRules()) or to
+ * never touch them at all (built-in only, see builtinIgnoredRules()).
  *
- * A rule matches one field against a case-insensitive glob pattern
- * (e.g. "xwaylandvideobridge", "*Picture-in-Picture*"). Extending the matcher to
- * a new attribute is a matter of adding a Field value, a factory, and a case in
- * matches().
+ * A plain rule matches one field against a case-insensitive glob pattern
+ * (e.g. "xwaylandvideobridge", "*Picture-in-Picture*"); every rule in a list
+ * is OR'd against a window (see loadFloatingRules()'s doc comment for why
+ * that's sometimes not selective enough on its own, and matchClassAndTitle()
+ * for the alternative). Extending the matcher to a new single field is a
+ * matter of adding a Field value, a factory, and a case in matches().
  */
 class WindowRule
 {
@@ -33,6 +35,15 @@ public:
     static WindowRule matchClass(const QString &glob);
     /** Match the window's caption (title). */
     static WindowRule matchTitle(const QString &glob);
+    /**
+     * Match only a window whose class *and* title both satisfy their own
+     * glob -- unlike a plain matchClass()/matchTitle() rule sitting in the
+     * same OR'd list as every other rule, this lets a title glob generic
+     * enough to also match unrelated windows (e.g. "*Settings*") be pinned
+     * to one specific application's class instead of floating every window
+     * with a matching title regardless of what app it belongs to.
+     */
+    static WindowRule matchClassAndTitle(const QString &classGlob, const QString &titleGlob);
 
     /** Whether @p window satisfies this rule. */
     bool matches(const Window *window) const;
@@ -41,12 +52,14 @@ private:
     enum class Field {
         Class,
         Title,
+        ClassAndTitle,
     };
 
-    WindowRule(Field field, const QString &glob);
+    WindowRule(Field field, const QString &glob, const QString &secondGlob = QString());
 
     Field m_field;
-    QRegularExpression m_pattern;
+    QRegularExpression m_pattern; // the class pattern, for ClassAndTitle too
+    QRegularExpression m_titlePattern; // ClassAndTitle only; unused (invalid) otherwise
 };
 
 /**
