@@ -215,6 +215,20 @@ void ShortcutController::registerShortcuts()
     add(QStringLiteral("ki3_noop_tiles_editor"), i18n("ki3: Disabled Tiles Editor"),
         {QKeySequence(Qt::META | Qt::Key_T)}, []() { });
 
+    // Steal plasmashell's "Activate Application Launcher" shortcut (bare
+    // Meta tap, plus its Alt+F1 alternate) and no-op it: the start menu
+    // widget itself is removed from the panel by ki3-panel-patch.py (see
+    // session/ki3-panel-patch.py), but that shortcut lives independently in
+    // kglobalshortcutsrc and would still pop the launcher open even with no
+    // panel icon left to click. Same steal-and-restore mechanism as the
+    // Tiles Editor/Overview/maximize-minimize no-ops above -- component-
+    // agnostic (KGlobalAccel::stealShortcutSystemwide() doesn't care that
+    // this one is normally owned by "plasmashell" rather than "kwin") --
+    // restored to plasmashell's own binding on a clean exit back to plain
+    // Plasma.
+    add(QStringLiteral("ki3_noop_start_menu"), i18n("ki3: Disabled Application Launcher"),
+        {QKeySequence(Qt::Key_Meta), QKeySequence(Qt::ALT | Qt::Key_F1)}, []() { });
+
     // Workspaces: Meta+1..9,0 switch, Meta+Shift+1..9,0 move window. As in
     // i3/sway, Meta+0 is workspace 10.
     static constexpr Qt::Key digits[10] = {
